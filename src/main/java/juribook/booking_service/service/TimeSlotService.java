@@ -53,7 +53,7 @@ public class TimeSlotService {
 
         TimeSlot slot = new TimeSlot();
         slot.setLawyerId(lawyerId);
-        slot.setAvailabilityId(null); // créneau ponctuel, pas de récurrence source
+        slot.setAvailabilityId(null); // créneau ponctuel - pas de récurrence source
         slot.setDate(request.getDate());
         slot.setStartTime(request.getStartTime());
         slot.setEndTime(request.getEndTime());
@@ -140,15 +140,46 @@ public class TimeSlotService {
     // ══════════════════════════════════════════════════════════
     //  Consultation
     // ══════════════════════════════════════════════════════════
+    /**
+     * Liste les créneaux d'un avocat avec filtres optionnels.
+     *
+     * Priorité de date : si `date` est fourni, il prime sur fromDate/toDate
+     * et borne la recherche à cette seule journée, usage typique de l'API
+     * publique (Sprint 3.4) : GET /api/lawyers/{id}/slots?date=2026-05-15.
+     *
+     * Filtre de statut par défaut : si aucun `status` n'est fourni ET que
+     * `date` est utilisé (cas de la consultation publique), seuls les
+     * créneaux AVAILABLE sont retournés, un client cherchant un rendez-vous
+     * n'a pas à voir les créneaux BOOKED ou BLOCKED des autres clients.
+     * Si `status` est fourni explicitement, il prime toujours (permet à
+     * l'avocat ou à l'admin de consulter d'autres statuts).
+     */
     @Transactional(readOnly = true)
-    public List<TimeSlotResponse> getSlots(Long lawyerId, LocalDate fromDate, LocalDate toDate, SlotStatus status) {
-        LocalDate from = fromDate != null ? fromDate : LocalDate.now();
-        LocalDate to   = toDate   != null ? toDate   : from.plusMonths(1);
+    public List<TimeSlotResponse> getSlots(Long lawyerId, LocalDate date,
+                                           LocalDate fromDate, LocalDate toDate,
+                                           SlotStatus status) {
+        LocalDate from;
+        LocalDate to;
+        boolean defaultToAvailableOnly;
+
+        if (date != null) {
+            from = date;
+            to = date;
+            defaultToAvailableOnly = true;
+        } else {
+            from = fromDate != null ? fromDate : LocalDate.now();
+            to   = toDate   != null ? toDate   : from.plusMonths(1);
+            defaultToAvailableOnly = false;
+        }
 
         List<TimeSlot> slots = timeSlotRepository.findByLawyerIdInRange(lawyerId, from, to);
 
+        SlotStatus effectiveStatus = status != null
+                ? status
+                : (defaultToAvailableOnly ? SlotStatus.AVAILABLE : null);
+
         return slots.stream()
-                .filter(s -> status == null || s.getStatus() == status)
+                .filter(s -> effectiveStatus == null || s.getStatus() == effectiveStatus)
                 .map(TimeSlotResponse::from)
                 .toList();
     }

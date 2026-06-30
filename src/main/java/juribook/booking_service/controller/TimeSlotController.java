@@ -37,12 +37,12 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/lawyers/{lawyerId}/slots")
 @RequiredArgsConstructor
-@Tag(name = "Créneaux", description = "Gestion ponctuelle des créneaux — ajout, suppression, congés")
+@Tag(name = "Créneaux", description = "Gestion ponctuelle des créneaux - ajout, suppression, congés")
 public class TimeSlotController {
 
     private final TimeSlotService timeSlotService;
 
-    // ── POST /api/lawyers/{lawyerId}/slots - créneau ponctuel ──
+    // ── POST /api/lawyers/{lawyerId}/slots — créneau ponctuel ──
     @PostMapping
     @Operation(
         summary = "Ajouter un créneau ponctuel",
@@ -117,31 +117,44 @@ public class TimeSlotController {
         return ResponseEntity.ok(timeSlotService.unblockSlot(lawyerId, id));
     }
 
-    // ── GET /api/lawyers/{lawyerId}/slots - consultation ───────
+    // ── GET /api/lawyers/{lawyerId}/slots — consultation ───────
     @GetMapping
     @Operation(
         summary = "Lister les créneaux d'un avocat",
         description = """
-            Accessible à tous — pas de JWT requis.
-            Filtres optionnels : plage de dates (défaut : aujourd'hui → +1 mois)
-            et statut (AVAILABLE, BOOKED, BLOCKED, CANCELLED, COMPLETED).
+            Accessible à tous, pas de JWT requis.
+
+            Deux modes d'utilisation :
+              1. ?date=2026-05-15 → créneaux LIBRES (AVAILABLE) de ce jour précis
+                 uniquement. C'est le mode public typique (Sprint 3.4) : un client
+                 cherche les créneaux qu'il peut réserver pour une date donnée.
+              2. ?fromDate=...&toDate=... → plage de dates (défaut : aujourd'hui
+                 → +1 mois), tous statuts confondus par défaut. Utile pour l'avocat
+                 qui veut voir son planning complet.
+
+            Dans les deux cas, ?status=... permet de forcer un filtre de statut
+            explicite (prime toujours sur le comportement par défaut).
             """
     )
     @ApiResponse(responseCode = "200", description = "Liste des créneaux")
     public ResponseEntity<List<TimeSlotResponse>> getSlots(
             @PathVariable Long lawyerId,
 
-            @Parameter(description = "Date de début (incluse), défaut : aujourd'hui")
+            @Parameter(description = "Date précise - retourne uniquement les créneaux libres (AVAILABLE) de ce jour. Prime sur fromDate/toDate si fourni.")
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+
+            @Parameter(description = "Date de début de plage (incluse), défaut : aujourd'hui - ignoré si 'date' est fourni")
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
 
-            @Parameter(description = "Date de fin (incluse), défaut : aujourd'hui + 1 mois")
+            @Parameter(description = "Date de fin de plage (incluse), défaut : aujourd'hui + 1 mois - ignoré si 'date' est fourni")
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
 
-            @Parameter(description = "Filtrer par statut (optionnel)")
+            @Parameter(description = "Force un statut précis (sinon : AVAILABLE seul si 'date' fourni, tous statuts sinon)")
             @RequestParam(required = false) SlotStatus status) {
 
-        return ResponseEntity.ok(timeSlotService.getSlots(lawyerId, fromDate, toDate, status));
+        return ResponseEntity.ok(timeSlotService.getSlots(lawyerId, date, fromDate, toDate, status));
     }
 }
