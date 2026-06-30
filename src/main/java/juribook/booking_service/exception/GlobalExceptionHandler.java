@@ -14,8 +14,9 @@ import java.util.Map;
  * Gestionnaire global des exceptions HTTP pour le booking-service.
  *
  * Codes HTTP retournés :
- *   400 → validation des champs (@Valid) ou disponibilité invalide (chevauchement)
- *   404 → disponibilité introuvable
+ *   400 → validation des champs (@Valid) ou disponibilité/créneau invalide (chevauchement, passé, etc.)
+ *   404 → disponibilité ou créneau introuvable
+ *   409 → créneau déjà réservé (double réservation)
  *   500 → erreur inattendue
  */
 @RestControllerAdvice
@@ -61,6 +62,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleInvalidTimeSlot(
             InvalidTimeSlotException ex) {
         return ResponseEntity.badRequest()
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    // ── Double réservation ──────────────────────
+    @ExceptionHandler(BookingConflictException.class)
+    public ResponseEntity<Map<String, String>> handleBookingConflict(
+            BookingConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("message", ex.getMessage()));
     }
 

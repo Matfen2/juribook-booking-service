@@ -44,14 +44,19 @@ public class BookingController {
             Crée une réservation en statut PENDING (en attente de réponse de
             l'avocat) et marque immédiatement le créneau comme BOOKED, pour
             qu'il ne soit plus proposé à d'autres clients.
+
+            Protégé contre la double réservation (Sprint 4.3) : si deux
+            clients réservent le même créneau au même instant, un seul
+            obtient le 201, l'autre reçoit un 409 Conflict.
             """
     )
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Réservation créée, créneau marqué BOOKED"),
-        @ApiResponse(responseCode = "400", description = "Données invalides, créneau déjà réservé ou passé"),
+        @ApiResponse(responseCode = "400", description = "Données invalides ou créneau indisponible (bloqué, passé)"),
         @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
         @ApiResponse(responseCode = "403", description = "Rôle insuffisant (CLIENT requis)"),
-        @ApiResponse(responseCode = "404", description = "Créneau introuvable")
+        @ApiResponse(responseCode = "404", description = "Créneau introuvable"),
+        @ApiResponse(responseCode = "409", description = "Créneau déjà réservé (double réservation)")
     })
     public ResponseEntity<BookingResponse> createBooking(
             Authentication authentication,

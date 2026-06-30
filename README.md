@@ -1,6 +1,6 @@
 # juribook-booking-service
 
-Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients.
+Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients avec protection contre la double réservation.
 
 ## Stack
 
@@ -40,21 +40,22 @@ src/main/java/juribook/booking_service/
 │   ├── Booking.java                      # Réservation d'un créneau par un client
 │   └── BookingStatus.java                # PENDING | CONFIRMED | COMPLETED | CANCELLED
 ├── exception/
-│   ├── GlobalExceptionHandler.java
+│   ├── GlobalExceptionHandler.java       # Handlers 400/404/409/500
 │   ├── InvalidAvailabilityException.java
 │   ├── AvailabilityNotFoundException.java
 │   ├── InvalidTimeSlotException.java
-│   └── TimeSlotNotFoundException.java
+│   ├── TimeSlotNotFoundException.java
+│   └── BookingConflictException.java     # 409 — créneau déjà réservé (Sprint 4.3)
 ├── filter/
 │   └── JwtAuthenticationFilter.java      # Filtre Spring Security (OncePerRequestFilter)
 ├── repository/
 │   ├── AvailabilityRepository.java
-│   ├── TimeSlotRepository.java
+│   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate (verrou pessimiste, Sprint 4.3)
 │   └── BookingRepository.java
 └── service/
     ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
     ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
-    ├── BookingService.java               # Réservation : crée le Booking, marque le créneau BOOKED
+    ├── BookingService.java               # Réservation, marquage BOOKED, protection anti-concurrence
     └── JwtService.java                   # Validation des tokens JWT (lecture seule)
 src/main/resources/
 ├── application.yaml
@@ -62,7 +63,8 @@ src/main/resources/
     ├── V1__create_availabilities_table.sql
     ├── V2__create_time_slots_table.sql
     ├── V3__add_block_reason_to_time_slots.sql
-    └── V4__create_bookings_table.sql
+    ├── V4__create_bookings_table.sql
+    └── V5__add_unique_active_booking_per_slot.sql
 ```
 
 ## Lancer en local (hors Docker)
@@ -96,7 +98,7 @@ docker compose up -d postgres-booking booking-service
 | Méthode | URL | Description |
 |---|---|---|
 | `GET` | `/api/lawyers/{lawyerId}/availabilities` | Liste des disponibilités récurrentes d'un avocat (actives et inactives) |
-| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux : deux modes, voir ci-dessous |
+| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux — deux modes, voir ci-dessous |
 
 ### Protégés LAWYER (token JWT requis, rôle LAWYER)
 
@@ -113,7 +115,7 @@ docker compose up -d postgres-booking booking-service
 
 | Méthode | URL | Description |
 |---|---|---|
-| `POST` | `/api/bookings` | Réserver un créneau : crée une réservation PENDING et marque le créneau BOOKED |
+| `POST` | `/api/bookings` | Réserver un créneau — crée une réservation PENDING, marque le créneau BOOKED, protégé contre la double réservation (409) |
 
 ---
 
@@ -267,6 +269,27 @@ Réponse - 201. Le `clientId` n'est jamais pris dans le body, il est extrait du 
 
 ---
 
+### Réserver un créneau déjà pris (Sprint 4.3)
+```json
+POST http://localhost:8083/api/bookings
+Authorization: Bearer <token_jwt_client>
+Content-Type: application/json
+
+{
+    "timeSlotId": 67,
+    "reason": "Deuxième tentative"
+}
+```
+Réponse - **409 Conflict** si le créneau 67 est déjà `BOOKED` :
+```json
+{
+    "message": "Ce créneau est déjà réservé"
+}
+```
+Garanti même en cas de requêtes simultanées sur le même créneau, voir [Protection anti-concurrence](#protection-anti-concurrence-sprint-43).
+
+---
+
 ### Cas d'erreur
 
 ```
@@ -278,7 +301,8 @@ DELETE /slots/{id} sur un créneau BOOKED                  → 400 "Impossible d
 DELETE /slots/{id} sur un créneau COMPLETED                → 400 "Impossible de supprimer un créneau déjà honoré"
 POST /slots/{id}/unblock sur un créneau non bloqué         → 400 "Ce créneau n'est pas bloqué"
 POST /bookings sur un timeSlotId inexistant                → 404 "Créneau introuvable : id=..."
-POST /bookings sur un créneau déjà BOOKED/BLOCKED/etc.      → 400 "Ce créneau n'est plus disponible à la réservation"
+POST /bookings sur un créneau déjà BOOKED                  → 409 "Ce créneau est déjà réservé"
+POST /bookings sur un créneau BLOCKED/CANCELLED/COMPLETED   → 400 "Ce créneau n'est plus disponible à la réservation"
 POST /bookings sur un créneau déjà passé                   → 400 "Impossible de réserver un créneau déjà passé"
 POST /bookings sans reason                                  → 400 "Le motif de consultation est obligatoire"
 Toute route LAWYER sans token                               → 401 Unauthorized
@@ -324,6 +348,12 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ```bash
 docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT b.id AS booking_id, b.status AS booking_status, t.id AS slot_id, t.status AS slot_status FROM bookings b JOIN time_slots t ON t.id = b.time_slot_id;"
+```
+
+### Vérifier qu'aucun créneau n'a deux réservations actives (devrait toujours retourner 0 ligne)
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT time_slot_id, COUNT(*) FROM bookings WHERE status <> 'CANCELLED' GROUP BY time_slot_id HAVING COUNT(*) > 1;"
 ```
 
 ### Vérifier les migrations Flyway
@@ -396,6 +426,15 @@ La création d'une `Availability` déclenche **immédiatement** la génération 
 
 Aucune contrainte d'exclusion PostgreSQL n'est en place pour empêcher le chevauchement de créneaux, la vérification est faite **au niveau service** (`AvailabilityService` et `TimeSlotService`), avant tout insert. Une contrainte d'exclusion serait plus robuste mais plus complexe à mettre en place avec Flyway/Hibernate ; repoussée en V2 si besoin.
 
+### Protection anti-concurrence (Sprint 4.3)
+
+La réservation (`BookingService.createBooking`) lit le `TimeSlot` via `TimeSlotRepository.findByIdForUpdate`, qui pose un verrou pessimiste en écriture (`SELECT ... FOR UPDATE`). Si deux clients réservent le même créneau au même instant :
+
+1. La première transaction obtient le verrou, lit `AVAILABLE`, crée le `Booking`, passe le créneau en `BOOKED`, commit (et libère le verrou).
+2. La seconde transaction attendait le verrou, elle l'obtient seulement après le commit de la première, relit le créneau et voit `BOOKED` → rejet immédiat avec `BookingConflictException` → **409 Conflict**.
+
+En filet de sécurité supplémentaire (au cas où le verrou serait contourné, ex. accès direct en base), un index unique partiel (`V5__add_unique_active_booking_per_slot.sql`) empêche plus d'une réservation **active** (statut différent de `CANCELLED`) par créneau au niveau base de données. Une violation de cette contrainte est aussi convertie en 409.
+
 ---
 
 ## Kafka
@@ -419,4 +458,3 @@ Les claims extraits du token :
 
 - **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController` et `TimeSlotController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). À corriger avant la mise en production.
 - **Créneaux passés du jour même non filtrés à l'affichage** : `GET /slots?date=...` filtre par jour (`AVAILABLE` uniquement) mais ne tient pas compte de l'heure. Un créneau du jour déjà passé dans la journée peut donc encore apparaître dans la réponse, alors qu'il n'est plus réservable (`TimeSlot.isBookable()` existe mais n'est pas encore branché sur `TimeSlotService.getSlots()`).
-- **Pas de protection anti-concurrence sur `POST /api/bookings`** : la vérification du statut `AVAILABLE` du créneau (`BookingService.validateSlotIsBookable`) n'est pas protégée par un verrou pessimiste ni une contrainte BDD. Deux requêtes simultanées sur le même créneau pourraient théoriquement passer toutes les deux. C'est l'objet du Sprint 4.3 (double réservation → `409 Conflict`).

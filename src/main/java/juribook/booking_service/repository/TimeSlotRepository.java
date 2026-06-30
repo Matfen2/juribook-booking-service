@@ -1,8 +1,10 @@
 package juribook.booking_service.repository;
 
+import jakarta.persistence.LockModeType;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -46,7 +48,6 @@ public interface TimeSlotRepository extends JpaRepository<TimeSlot, Long> {
     List<TimeSlot> findByLawyerIdAndStatus(Long lawyerId, SlotStatus status);
 
     // ── Sprint 3.3 - gestion des créneaux ponctuels et blocages ──
-
     // Créneaux AVAILABLE d'un avocat sur une plage de dates inclusive,
     // utilisés pour le blocage en masse (congés/indisponibilité)
     @Query("""
@@ -75,4 +76,20 @@ public interface TimeSlotRepository extends JpaRepository<TimeSlot, Long> {
         @Param("fromDate") LocalDate fromDate,
         @Param("toDate")   LocalDate toDate
     );
+
+    // ── Sprint 4.3 - protection anti-concurrence sur la réservation ──
+
+    /**
+     * Récupère un créneau avec un verrou pessimiste en écriture
+     * (SELECT ... FOR UPDATE).
+     *
+     * Utilisé exclusivement par BookingService.createBooking : sérialise
+     * deux requêtes de réservation concurrentes sur le même créneau, la
+     * seconde transaction attend que la première se termine (commit ou
+     * rollback) avant de pouvoir lire la ligne, et voit donc le statut à
+     * jour (BOOKED) plutôt qu'une version périmée encore AVAILABLE.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT t FROM TimeSlot t WHERE t.id = :id")
+    Optional<TimeSlot> findByIdForUpdate(@Param("id") Long id);
 }

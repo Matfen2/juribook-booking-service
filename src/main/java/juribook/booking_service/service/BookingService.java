@@ -6,30 +6,32 @@ import juribook.booking_service.entity.Booking;
 import juribook.booking_service.entity.BookingStatus;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
+import juribook.booking_service.exception.BookingConflictException;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
 import juribook.booking_service.repository.BookingRepository;
 import juribook.booking_service.repository.TimeSlotRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Service métier pour la réservation de créneaux par les clients (Sprint 4.2).
+ * Service métier pour la réservation de créneaux par les clients
+ * (Sprint 4.2 + 4.3 : double réservation).
  *
- * Règle centrale : réserver un créneau crée un Booking en statut PENDING
- * (en attente de réponse de l'avocat, cf. BookingStatus) ET marque
- * immédiatement le TimeSlot associé comme BOOKED, pour qu'il ne soit plus
- * proposé à d'autres clients pendant que l'avocat traite la demande.
+ * Protection de la concurrence (Sprint 4.3) : le créneau est lu avec un
+ * verrou pessimiste (SELECT ... FOR UPDATE via TimeSlotRepository.findByIdForUpdate).
+ * Si deux clients réservent le même créneau au même instant, la seconde
+ * transaction attend la fin de la première (commit), puis relit le statut
+ * à jour — elle voit BOOKED et se fait rejeter avec un 409 Conflict, au
+ * lieu de passer en double comme c'était possible avant ce sprint.
  *
- * TimeSlot et Booking vivent dans la même base (booking-service), l'accès
- * direct via TimeSlotRepository ne nécessite donc pas d'appel inter-services.
- *
- * ⚠️ Protection de la concurrence (deux clients réservent le même créneau
- * au même instant) : la vérification de statut ci-dessous n'est pas encore
- * protégée par une contrainte BDD ou un verrou, c'est l'objet du Sprint 4.3
- * (double réservation → 409 Conflict).
+ * Filet de sécurité supplémentaire en base (V5__add_unique_active_booking_per_slot.sql) :
+ * un index unique partiel empêche plus d'une réservation active (statut
+ * différent de CANCELLED) par créneau, au cas où le verrou applicatif
+ * serait contourné.
  */
 @Service
 @RequiredArgsConstructor
@@ -41,7 +43,7 @@ public class BookingService {
 
     @Transactional
     public BookingResponse createBooking(Long clientId, CreateBookingRequest request) {
-        TimeSlot slot = timeSlotRepository.findById(request.getTimeSlotId())
+        TimeSlot slot = timeSlotRepository.findByIdForUpdate(request.getTimeSlotId())
                 .orElseThrow(() -> new TimeSlotNotFoundException(
                     "Créneau introuvable : id=" + request.getTimeSlotId()));
 
@@ -54,7 +56,16 @@ public class BookingService {
         booking.setReason(request.getReason());
         booking.setStatus(BookingStatus.PENDING);
 
-        Booking saved = bookingRepository.save(booking);
+        Booking saved;
+        try {
+            saved = bookingRepository.save(booking);
+        } catch (DataIntegrityViolationException e) {
+            // Filet de sécurité si l'index unique partiel (V5) est déclenché
+            // malgré le verrou pessimiste, ne devrait normalement jamais
+            // arriver, mais protège contre un contournement du verrou.
+            throw new BookingConflictException(
+                "Ce créneau vient d'être réservé par quelqu'un d'autre");
+        }
 
         slot.setStatus(SlotStatus.BOOKED);
         slot.setBookingId(saved.getId());
@@ -67,6 +78,9 @@ public class BookingService {
     }
 
     private void validateSlotIsBookable(TimeSlot slot) {
+        if (slot.getStatus() == SlotStatus.BOOKED) {
+            throw new BookingConflictException("Ce créneau est déjà réservé");
+        }
         if (slot.getStatus() != SlotStatus.AVAILABLE) {
             throw new InvalidTimeSlotException(
                 "Ce créneau n'est plus disponible à la réservation");
