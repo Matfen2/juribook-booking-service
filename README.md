@@ -1,6 +1,6 @@
 # juribook-booking-service
 
-Microservice de gestion des disponibilités et créneaux pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres.
+Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients.
 
 ## Stack
 
@@ -20,20 +20,25 @@ src/main/java/juribook/booking_service/
 │   └── OpenApiConfig.java                # Configuration Swagger UI
 ├── controller/
 │   ├── AvailabilityController.java       # POST/GET/DELETE /api/lawyers/{id}/availabilities
-│   └── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
+│   ├── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
+│   └── BookingController.java            # POST /api/bookings
 ├── dto/
 │   ├── request/
 │   │   ├── CreateAvailabilityRequest.java
 │   │   ├── CreateTimeSlotRequest.java
-│   │   └── BlockPeriodRequest.java
+│   │   ├── BlockPeriodRequest.java
+│   │   └── CreateBookingRequest.java
 │   └── response/
 │       ├── AvailabilityResponse.java
 │       ├── TimeSlotResponse.java
-│       └── BlockPeriodResponse.java
+│       ├── BlockPeriodResponse.java
+│       └── BookingResponse.java
 ├── entity/
 │   ├── Availability.java                 # Disponibilité récurrente hebdomadaire
 │   ├── TimeSlot.java                     # Créneau concret daté, réservable
-│   └── SlotStatus.java                   # AVAILABLE | BOOKED | BLOCKED | CANCELLED | COMPLETED
+│   ├── SlotStatus.java                   # AVAILABLE | BOOKED | BLOCKED | CANCELLED | COMPLETED
+│   ├── Booking.java                      # Réservation d'un créneau par un client
+│   └── BookingStatus.java                # PENDING | CONFIRMED | COMPLETED | CANCELLED
 ├── exception/
 │   ├── GlobalExceptionHandler.java
 │   ├── InvalidAvailabilityException.java
@@ -44,17 +49,20 @@ src/main/java/juribook/booking_service/
 │   └── JwtAuthenticationFilter.java      # Filtre Spring Security (OncePerRequestFilter)
 ├── repository/
 │   ├── AvailabilityRepository.java
-│   └── TimeSlotRepository.java
+│   ├── TimeSlotRepository.java
+│   └── BookingRepository.java
 └── service/
     ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
     ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
+    ├── BookingService.java               # Réservation : crée le Booking, marque le créneau BOOKED
     └── JwtService.java                   # Validation des tokens JWT (lecture seule)
 src/main/resources/
 ├── application.yaml
 └── db/migration/
     ├── V1__create_availabilities_table.sql
     ├── V2__create_time_slots_table.sql
-    └── V3__add_block_reason_to_time_slots.sql
+    ├── V3__add_block_reason_to_time_slots.sql
+    └── V4__create_bookings_table.sql
 ```
 
 ## Lancer en local (hors Docker)
@@ -88,7 +96,7 @@ docker compose up -d postgres-booking booking-service
 | Méthode | URL | Description |
 |---|---|---|
 | `GET` | `/api/lawyers/{lawyerId}/availabilities` | Liste des disponibilités récurrentes d'un avocat (actives et inactives) |
-| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux — deux modes, voir ci-dessous |
+| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux : deux modes, voir ci-dessous |
 
 ### Protégés LAWYER (token JWT requis, rôle LAWYER)
 
@@ -101,11 +109,11 @@ docker compose up -d postgres-booking booking-service
 | `POST` | `/api/lawyers/{lawyerId}/slots/block` | Bloquer une période (congés, indisponibilité) |
 | `POST` | `/api/lawyers/{lawyerId}/slots/{id}/unblock` | Débloquer un créneau |
 
-### Protégés CLIENT (à venir — Sprint 3.x)
+### Protégés CLIENT (token JWT requis, rôle CLIENT)
 
 | Méthode | URL | Description |
 |---|---|---|
-| `POST` | `/api/bookings` | Réserver un créneau (route déclarée dans SecurityConfig, pas encore implémentée) |
+| `POST` | `/api/bookings` | Réserver un créneau : crée une réservation PENDING et marque le créneau BOOKED |
 
 ---
 
@@ -232,6 +240,33 @@ Réponse - 204. Refusé (400) si le créneau est **BOOKED** ou **COMPLETED**.
 
 ---
 
+### Réserver un créneau (client)
+```json
+POST http://localhost:8083/api/bookings
+Authorization: Bearer <token_jwt_client>
+Content-Type: application/json
+
+{
+    "timeSlotId": 67,
+    "reason": "Litige avec mon employeur"
+}
+```
+Réponse - 201. Le `clientId` n'est jamais pris dans le body, il est extrait du JWT. Le créneau passe immédiatement en **BOOKED**, la réservation est créée en statut **PENDING** (en attente de réponse de l'avocat) :
+```json
+{
+    "id": 1,
+    "clientId": 1,
+    "lawyerId": 1,
+    "timeSlotId": 67,
+    "status": "PENDING",
+    "reason": "Litige avec mon employeur",
+    "createdAt": "2026-06-30T21:29:51.633193",
+    "updatedAt": "2026-06-30T21:29:51.633193"
+}
+```
+
+---
+
 ### Cas d'erreur
 
 ```
@@ -242,8 +277,13 @@ POST /slots chevauchant un créneau existant                → 400 "Ce créneau
 DELETE /slots/{id} sur un créneau BOOKED                  → 400 "Impossible de supprimer un créneau réservé"
 DELETE /slots/{id} sur un créneau COMPLETED                → 400 "Impossible de supprimer un créneau déjà honoré"
 POST /slots/{id}/unblock sur un créneau non bloqué         → 400 "Ce créneau n'est pas bloqué"
-Toute route LAWYER sans token                              → 401 Unauthorized
-Toute route LAWYER avec token CLIENT                        → 403 Forbidden
+POST /bookings sur un timeSlotId inexistant                → 404 "Créneau introuvable : id=..."
+POST /bookings sur un créneau déjà BOOKED/BLOCKED/etc.      → 400 "Ce créneau n'est plus disponible à la réservation"
+POST /bookings sur un créneau déjà passé                   → 400 "Impossible de réserver un créneau déjà passé"
+POST /bookings sans reason                                  → 400 "Le motif de consultation est obligatoire"
+Toute route LAWYER sans token                               → 401 Unauthorized
+Toute route LAWYER avec token CLIENT                         → 403 Forbidden
+Toute route CLIENT avec token LAWYER                          → 403 Forbidden
 ```
 
 ---
@@ -272,6 +312,18 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ```bash
 docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT status, COUNT(*) FROM time_slots GROUP BY status;"
+```
+
+### Lister les réservations d'un client
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT id, lawyer_id, time_slot_id, status, reason, created_at FROM bookings WHERE client_id = 1 ORDER BY created_at DESC;"
+```
+
+### Vérifier la cohérence créneau / réservation
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT b.id AS booking_id, b.status AS booking_status, t.id AS slot_id, t.status AS slot_status FROM bookings b JOIN time_slots t ON t.id = b.time_slot_id;"
 ```
 
 ### Vérifier les migrations Flyway
@@ -306,11 +358,14 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "DROP
 
 ```
 Availability ──< génère >── TimeSlot   (1 Availability produit N TimeSlot)
+TimeSlot     ──< réservé par >── Booking   (1 TimeSlot a au plus 1 Booking actif)
 ```
 
-Pas de FK JPA entre les deux entités : `TimeSlot.availabilityId` est une colonne de corrélation nullable (nullable car un créneau peut être créé ponctuellement, hors récurrence). Cela permet de désactiver ou modifier une `Availability` sans contrainte de suppression en cascade sur des créneaux déjà réservés ou passés.
+Pas de FK JPA entre ces entités :
+- `TimeSlot.availabilityId` est une colonne de corrélation nullable (nullable car un créneau peut être créé ponctuellement, hors récurrence). Cela permet de désactiver ou modifier une `Availability` sans contrainte de suppression en cascade sur des créneaux déjà réservés ou passés.
+- `Booking.timeSlotId` et `TimeSlot.bookingId` (référence croisée) sont également sans FK stricte, pour le même principe de découplage et d'évolution indépendante des deux entités.
 
-`lawyerId` (sur les deux entités) référence l'entité `Lawyer` du `lawyer-service` par son id technique, pas de jointure inter-services, pas de FK en base, simple colonne de corrélation (principe microservices : *database per service*).
+`lawyerId` (sur les trois entités) et `clientId` (sur `Booking`) référencent respectivement l'entité `Lawyer` du `lawyer-service` et l'entité `User` de l'`auth-service` par leur id technique — pas de jointure inter-services, pas de FK en base, simples colonnes de corrélation (principe microservices : *database per service*).
 
 ### Cycle de vie d'un TimeSlot (SlotStatus)
 
@@ -323,19 +378,29 @@ CANCELLED  → AVAILABLE  (le créneau redevient réservable après annulation)
 BLOCKED    → AVAILABLE  (l'avocat débloque le créneau)
 ```
 
+### Cycle de vie d'un Booking (BookingStatus)
+
+```
+PENDING    → CONFIRMED  (l'avocat accepte la demande)
+PENDING    → CANCELLED  (annulation avant confirmation)
+CONFIRMED  → CANCELLED  (annulation après confirmation, règle des 24h — Sprint 4.5)
+CONFIRMED  → COMPLETED  (rendez-vous honoré)
+```
+Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` (Sprint 4.2) le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction.
+
 ### Génération des créneaux
 
 La création d'une `Availability` déclenche **immédiatement** la génération des `TimeSlot` concrets correspondants, sur une fenêtre glissante (4 semaines par défaut, configurable via `generationWeeks`, 1 à 12 semaines). La génération est **idempotente** : un appel répété sur la même fenêtre n'insère jamais de doublon (vérification applicative + filet de sécurité via la contrainte `UNIQUE(lawyer_id, date, start_time)` en base).
 
 ### Contrainte de chevauchement
 
-Aucune contrainte d'exclusion PostgreSQL n'est en place pour empêcher le chevauchement de créneaux — la vérification est faite **au niveau service** (`AvailabilityService` et `TimeSlotService`), avant tout insert. Une contrainte d'exclusion serait plus robuste mais plus complexe à mettre en place avec Flyway/Hibernate ; repoussée en V2 si besoin.
+Aucune contrainte d'exclusion PostgreSQL n'est en place pour empêcher le chevauchement de créneaux, la vérification est faite **au niveau service** (`AvailabilityService` et `TimeSlotService`), avant tout insert. Une contrainte d'exclusion serait plus robuste mais plus complexe à mettre en place avec Flyway/Hibernate ; repoussée en V2 si besoin.
 
 ---
 
 ## Kafka
 
-Désactivé en développement local (pas de broker disponible) via `spring.autoconfigure.exclude` dans `application.yaml`. À réactiver en production en supprimant l'exclusion et en passant `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` (cf. Docker Compose). Topics prévus côté booking-service (Sprint 3.x suivant) : `booking-events`, `slot-events`.
+Désactivé en développement local (pas de broker disponible) via `spring.autoconfigure.exclude` dans `application.yaml`. À réactiver en production en supprimant l'exclusion et en passant `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` (cf. Docker Compose). Topics prévus côté booking-service (Sprint 4.6) : `booking-events` (création/confirmation/annulation), `slot-events` (libération de créneau pour la liste d'attente).
 
 ---
 
@@ -345,7 +410,7 @@ Le booking-service **ne génère pas** de JWT, il valide uniquement les tokens �
 
 Les claims extraits du token :
 - `sub` → email de l'utilisateur
-- `id` → authUserId (Long) - stocké dans `SecurityContext.principal`
+- `id` → authUserId (Long) - stocké dans `SecurityContext.principal`, utilisé directement comme `clientId` pour `POST /api/bookings`
 - `role` → LAWYER | CLIENT | ADMIN - utilisé pour les règles d'accès
 
 ---
@@ -354,3 +419,4 @@ Les claims extraits du token :
 
 - **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController` et `TimeSlotController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). À corriger avant la mise en production.
 - **Créneaux passés du jour même non filtrés à l'affichage** : `GET /slots?date=...` filtre par jour (`AVAILABLE` uniquement) mais ne tient pas compte de l'heure. Un créneau du jour déjà passé dans la journée peut donc encore apparaître dans la réponse, alors qu'il n'est plus réservable (`TimeSlot.isBookable()` existe mais n'est pas encore branché sur `TimeSlotService.getSlots()`).
+- **Pas de protection anti-concurrence sur `POST /api/bookings`** : la vérification du statut `AVAILABLE` du créneau (`BookingService.validateSlotIsBookable`) n'est pas protégée par un verrou pessimiste ni une contrainte BDD. Deux requêtes simultanées sur le même créneau pourraient théoriquement passer toutes les deux. C'est l'objet du Sprint 4.3 (double réservation → `409 Conflict`).
