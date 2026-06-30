@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: booking-service
+
+  # ═══════════════════════════════════════════════════════════
+  #  Connexion PostgreSQL (database per service)
+  #  Port 5434 en local - voir docker-compose.yml (postgres-booking)
+  #  En conteneur Docker, surchargé par SPRING_DATASOURCE_URL
+  # ═══════════════════════════════════════════════════════════
+  datasource:
+    url: jdbc:postgresql://localhost:5434/bookingdb
+    username: juribook
+    password: juribook
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════════
+  #  Kafka - désactivé en dev local (pas de broker disponible)
+  #  En production Docker, réactiver en supprimant l'exclude
+  #  et en passant SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+  # ═══════════════════════════════════════════════════════════
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      group-id: booking-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
+
+server:
+  port: 8083
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+    display-request-duration: true
+  show-actuator: false
