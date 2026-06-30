@@ -76,6 +76,29 @@
             <version>2.8.9</version>
         </dependency>
 
+        <!-- ═══ Sécurité — validation JWT émis par l'auth-service ═══ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- ═══ Tests ═══ -->
         <!-- spring-boot-starter-test couvre déjà JUnit 5, Mockito, AssertJ,
              Spring Test et JSONPath — pas besoin de starters "-test" séparés
