@@ -9,7 +9,6 @@ import juribook.booking_service.entity.TimeSlot;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
 import juribook.booking_service.repository.TimeSlotRepository;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
