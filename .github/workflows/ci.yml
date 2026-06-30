@@ -12,10 +12,10 @@ name: CI
 on:
   push:
     branches:
-      - develop
+      - features/test
   pull_request:
     branches:
-      - main
+      - develop
 
 jobs:
 
