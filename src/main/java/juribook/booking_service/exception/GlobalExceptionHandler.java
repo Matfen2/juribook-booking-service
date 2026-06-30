@@ -50,6 +50,20 @@ public class GlobalExceptionHandler {
                 .body(Map.of("message", ex.getMessage()));
     }
 
+    @ExceptionHandler(TimeSlotNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleTimeSlotNotFound(
+            TimeSlotNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidTimeSlotException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidTimeSlot(
+            InvalidTimeSlotException ex) {
+        return ResponseEntity.badRequest()
+                .body(Map.of("message", ex.getMessage()));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, String>> handleIllegalArgument(
             IllegalArgumentException ex) {

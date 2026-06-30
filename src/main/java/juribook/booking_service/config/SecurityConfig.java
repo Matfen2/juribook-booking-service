@@ -20,17 +20,22 @@ import java.util.List;
 /**
  * Configuration Spring Security du booking-service.
  *
- * CORS intégré directement dans SecurityFilterChain via .cors(),
+ * CORS intégré directement dans SecurityFilterChain via .cors() —
  * pas de bean CorsFilter séparé. Un CorsFilter externe entre en
  * conflit avec SecurityFilterChain dans Spring Boot 4 et empêche
  * son chargement (leçon tirée du lawyer-service et de l'auth-service).
  *
  * Routes prévues (affinées au fil des sprints 3.2+) :
- *   GET  /api/availabilities/lawyer/{lawyerId}  → public (consulter les dispos)
- *   GET  /api/slots/lawyer/{lawyerId}           → public (consulter les créneaux)
- *   POST /api/availabilities                    → LAWYER (déclarer ses dispos)
- *   POST /api/bookings                          → CLIENT (réserver — Sprint 3.2)
- *   GET  /actuator/health, /swagger-ui/**       → public
+ *   GET    /api/lawyers/{lawyerId}/availabilities        → public (consulter les dispos)
+ *   POST   /api/lawyers/{lawyerId}/availabilities        → LAWYER (déclarer ses dispos)
+ *   DELETE /api/lawyers/{lawyerId}/availabilities/{id}   → LAWYER (désactiver)
+ *   GET    /api/lawyers/{lawyerId}/slots                  → public (consulter les créneaux)
+ *   POST   /api/lawyers/{lawyerId}/slots                  → LAWYER (créneau ponctuel)
+ *   DELETE /api/lawyers/{lawyerId}/slots/{id}              → LAWYER (supprimer)
+ *   POST   /api/lawyers/{lawyerId}/slots/block             → LAWYER (bloquer une période)
+ *   POST   /api/lawyers/{lawyerId}/slots/{id}/unblock      → LAWYER (débloquer)
+ *   POST   /api/bookings                                   → CLIENT (réserver — Sprint 3.x)
+ *   GET    /actuator/health, /swagger-ui/**                → public
  */
 @Configuration
 @EnableWebSecurity
@@ -49,15 +54,19 @@ public class SecurityConfig {
                 )
                 .authorizeHttpRequests(auth -> auth
                     // ── Routes publiques ────────────────────────
-                    .requestMatchers(HttpMethod.GET, "/api/availabilities/**").permitAll()
-                    .requestMatchers(HttpMethod.GET, "/api/slots/**").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/lawyers/*/availabilities").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/lawyers/*/slots").permitAll()
                     .requestMatchers("/actuator/health").permitAll()
                     .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                    // ── Routes LAWYER — gestion de ses disponibilités
-                    .requestMatchers(HttpMethod.POST, "/api/availabilities").hasRole("LAWYER")
-                    .requestMatchers(HttpMethod.PUT,  "/api/availabilities/**").hasRole("LAWYER")
-                    .requestMatchers(HttpMethod.DELETE, "/api/availabilities/**").hasRole("LAWYER")
-                    // ── Routes CLIENT — réservation (Sprint 3.2)
+                    // ── Routes LAWYER — disponibilités récurrentes
+                    .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/availabilities").hasRole("LAWYER")
+                    .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/availabilities/*").hasRole("LAWYER")
+                    // ── Routes LAWYER — créneaux ponctuels et congés (Sprint 3.3)
+                    .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots").hasRole("LAWYER")
+                    .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/slots/*").hasRole("LAWYER")
+                    .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/block").hasRole("LAWYER")
+                    .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
+                    // ── Routes CLIENT — réservation (Sprint 3.x)
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
                     // ── Tout le reste → authentification requise
                     .anyRequest().authenticated()

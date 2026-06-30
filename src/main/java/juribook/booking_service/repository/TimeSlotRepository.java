@@ -19,7 +19,7 @@ public interface TimeSlotRepository extends JpaRepository<TimeSlot, Long> {
     List<TimeSlot> findByLawyerIdOrderByDateAscStartTimeAsc(Long lawyerId);
 
     // Créneaux disponibles d'un avocat à partir d'une date donnée
-    // (utilisé pour afficher les créneaux réservables côté client, Sprint 3.2)
+    // (utilisé pour afficher les créneaux réservables côté client - Sprint 3.2)
     @Query("""
         SELECT t FROM TimeSlot t
         WHERE t.lawyerId = :lawyerId
@@ -44,4 +44,35 @@ public interface TimeSlotRepository extends JpaRepository<TimeSlot, Long> {
 
     // Créneaux par statut (ex: lister les créneaux BOOKED pour un avocat)
     List<TimeSlot> findByLawyerIdAndStatus(Long lawyerId, SlotStatus status);
+
+    // ── Sprint 3.3 - gestion des créneaux ponctuels et blocages ──
+
+    // Créneaux AVAILABLE d'un avocat sur une plage de dates inclusive,
+    // utilisés pour le blocage en masse (congés/indisponibilité)
+    @Query("""
+        SELECT t FROM TimeSlot t
+        WHERE t.lawyerId = :lawyerId
+          AND t.status = juribook.booking_service.entity.SlotStatus.AVAILABLE
+          AND t.date BETWEEN :fromDate AND :toDate
+        ORDER BY t.date ASC, t.startTime ASC
+    """)
+    List<TimeSlot> findAvailableSlotsInRange(
+        @Param("lawyerId") Long lawyerId,
+        @Param("fromDate") LocalDate fromDate,
+        @Param("toDate")   LocalDate toDate
+    );
+
+    // Tous les créneaux d'un avocat sur une plage de dates, quel que soit
+    // le statut, utilisé pour la consultation filtrée (GET /slots)
+    @Query("""
+        SELECT t FROM TimeSlot t
+        WHERE t.lawyerId = :lawyerId
+          AND t.date BETWEEN :fromDate AND :toDate
+        ORDER BY t.date ASC, t.startTime ASC
+    """)
+    List<TimeSlot> findByLawyerIdInRange(
+        @Param("lawyerId") Long lawyerId,
+        @Param("fromDate") LocalDate fromDate,
+        @Param("toDate")   LocalDate toDate
+    );
 }

@@ -21,6 +21,7 @@ public class TimeSlotResponse {
     private LocalTime startTime;
     private LocalTime endTime;
     private SlotStatus status;
+    private String blockReason;
 
     public static TimeSlotResponse from(TimeSlot t) {
         return TimeSlotResponse.builder()
@@ -31,6 +32,7 @@ public class TimeSlotResponse {
                 .startTime(t.getStartTime())
                 .endTime(t.getEndTime())
                 .status(t.getStatus())
+                .blockReason(t.getBlockReason())
                 .build();
     }
 }

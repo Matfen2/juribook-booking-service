@@ -66,6 +66,11 @@ public class TimeSlot {
     @Column(name = "status", nullable = false, length = 10)
     private SlotStatus status = SlotStatus.AVAILABLE;
 
+    // Motif renseigné uniquement quand status = BLOCKED
+    // (ex: "Congés", "Formation", "Indisponibilité médicale") — Sprint 3.3
+    @Column(name = "block_reason", length = 255)
+    private String blockReason;
+
     // ── Lien vers la réservation (Sprint 3.2) ────────────────
     // Renseigné uniquement quand status = BOOKED.
     // Pointe vers l'id technique d'une future entité Booking
@@ -94,6 +99,7 @@ public class TimeSlot {
     }
 
     // ── Helpers métier ───────────────────────────────────────
+
     /**
      * Un créneau est réservable s'il est AVAILABLE et que sa date/heure
      * de début n'est pas déjà passée.
