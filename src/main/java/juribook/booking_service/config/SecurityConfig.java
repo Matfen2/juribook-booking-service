@@ -35,6 +35,7 @@ import java.util.List;
  *   POST   /api/lawyers/{lawyerId}/slots/block             → LAWYER (bloquer une période)
  *   POST   /api/lawyers/{lawyerId}/slots/{id}/unblock      → LAWYER (débloquer)
  *   POST   /api/bookings                                   → CLIENT (réserver)
+ *   GET    /api/bookings                                   → CLIENT (historique)
  *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer)
  *   PATCH  /api/bookings/{id}/reject                       → LAWYER (refuser)
  *   PATCH  /api/bookings/{id}/cancel                       → CLIENT ou LAWYER (annuler, règle 24h)
@@ -72,8 +73,9 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/slots/*").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/block").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
-                    // ── Routes CLIENT - réservation
+                    // ── Routes CLIENT - réservation et historique
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
+                    .requestMatchers(HttpMethod.GET,  "/api/bookings").hasRole("CLIENT")
                     // ── Routes LAWYER - confirmation/refus
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/confirm").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/reject").hasRole("LAWYER")

@@ -6,6 +6,8 @@ import juribook.booking_service.entity.Booking;
 import juribook.booking_service.entity.BookingStatus;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
+import juribook.booking_service.event.BookingEventPublisher;
+import juribook.booking_service.event.SlotEventPublisher;
 import juribook.booking_service.exception.BookingConflictException;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
@@ -32,7 +34,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Tests de BookingService : réservation + double réservation, 409.
+ * Tests de BookingService - réservation + double
+ * réservation, 409 + publication d'événements Kafka.
+ *
+ * BookingEventPublisher et SlotEventPublisher sont mockés (jamais null)
+ * depuis que BookingService en dépend dans son constructeur, sans ces
+ * mocks, @InjectMocks injecte null et toute méthode qui publie un
+ * événement lève une NullPointerException.
  */
 @ExtendWith(MockitoExtension.class)
 class BookingServiceTest {
@@ -42,6 +50,12 @@ class BookingServiceTest {
 
     @Mock
     private TimeSlotRepository timeSlotRepository;
+
+    @Mock
+    private BookingEventPublisher bookingEventPublisher;
+
+    @Mock
+    private SlotEventPublisher slotEventPublisher;
 
     @InjectMocks
     private BookingService bookingService;
@@ -108,6 +122,24 @@ class BookingServiceTest {
     }
 
     @Test
+    void createBooking_publishesBookingCreatedEvent() {
+        when(timeSlotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+        when(bookingRepository.save(any(Booking.class))).thenAnswer(inv -> {
+            Booking b = inv.getArgument(0);
+            b.setId(1L);
+            return b;
+        });
+
+        bookingService.createBooking(CLIENT_ID, request);
+
+        ArgumentCaptor<Booking> captor = ArgumentCaptor.forClass(Booking.class);
+        verify(bookingEventPublisher).publishBookingCreated(captor.capture());
+        assertThat(captor.getValue().getId()).isEqualTo(1L);
+        // Pas de libération de créneau à la création, seul reject/cancel le font
+        verifyNoInteractions(slotEventPublisher);
+    }
+
+    @Test
     void createBooking_throws_whenSlotNotFound() {
         when(timeSlotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.empty());
 
@@ -115,6 +147,7 @@ class BookingServiceTest {
                 .isInstanceOf(TimeSlotNotFoundException.class);
 
         verifyNoInteractions(bookingRepository);
+        verifyNoInteractions(bookingEventPublisher);
     }
 
     @Test
@@ -127,6 +160,7 @@ class BookingServiceTest {
                 .hasMessageContaining("passé");
 
         verifyNoInteractions(bookingRepository);
+        verifyNoInteractions(bookingEventPublisher);
     }
 
     @ParameterizedTest
@@ -145,7 +179,7 @@ class BookingServiceTest {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Double réservation : 409 Conflict
+    //  Double réservation - 409 Conflict
     // ══════════════════════════════════════════════════════════
     @Test
     void createBooking_throws_BookingConflictException_whenSlotAlreadyBooked() {
@@ -189,5 +223,6 @@ class BookingServiceTest {
                 .isInstanceOf(BookingConflictException.class);
 
         verify(timeSlotRepository, never()).save(any());
+        verifyNoInteractions(bookingEventPublisher);
     }
 }

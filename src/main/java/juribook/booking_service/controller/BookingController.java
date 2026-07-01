@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import juribook.booking_service.dto.request.CreateBookingRequest;
+import juribook.booking_service.dto.response.BookingHistoryResponse;
 import juribook.booking_service.dto.response.BookingResponse;
 import juribook.booking_service.service.BookingService;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,11 +22,14 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * Controller REST pour la réservation de créneaux et leur traitement.
  *
  * Routes :
  *   POST  /api/bookings              → CLIENT          (réserver un créneau)
+ *   GET   /api/bookings              → CLIENT          (historique de ses réservations)
  *   PATCH /api/bookings/{id}/confirm → LAWYER           (accepter une demande PENDING)
  *   PATCH /api/bookings/{id}/reject  → LAWYER           (refuser une demande PENDING)
  *   PATCH /api/bookings/{id}/cancel  → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
@@ -37,7 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/bookings")
 @RequiredArgsConstructor
-@Tag(name = "Réservations", description = "Réservation, confirmation, refus et annulation de créneaux")
+@Tag(name = "Réservations", description = "Réservation, consultation, confirmation, refus et annulation de créneaux")
 public class BookingController {
 
     private final BookingService bookingService;
@@ -51,7 +56,7 @@ public class BookingController {
             l'avocat) et marque immédiatement le créneau comme BOOKED, pour
             qu'il ne soit plus proposé à d'autres clients.
 
-            Protégé contre la double réservation (Sprint 4.3) : si deux
+            Protégé contre la double réservation : si deux
             clients réservent le même créneau au même instant, un seul
             obtient le 201, l'autre reçoit un 409 Conflict.
             """
@@ -71,6 +76,27 @@ public class BookingController {
         Long clientId = (Long) authentication.getPrincipal();
         BookingResponse response = bookingService.createBooking(clientId, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    // ── GET /api/bookings ──────────────────────────────────────
+    @GetMapping
+    @Operation(
+        summary = "Historique de mes réservations",
+        description = """
+            Retourne toutes les réservations du client authentifié (tous
+            statuts confondus : PENDING, CONFIRMED, CANCELLED, COMPLETED),
+            enrichies de la date/heure du créneau, triées du rendez-vous
+            le plus récent au plus ancien.
+            """
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Liste des réservations (peut être vide)"),
+        @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
+        @ApiResponse(responseCode = "403", description = "Rôle insuffisant (CLIENT requis)")
+    })
+    public ResponseEntity<List<BookingHistoryResponse>> getMyBookings(Authentication authentication) {
+        Long clientId = (Long) authentication.getPrincipal();
+        return ResponseEntity.ok(bookingService.getMyBookings(clientId));
     }
 
     // ── PATCH /api/bookings/{id}/confirm ──────────────────────

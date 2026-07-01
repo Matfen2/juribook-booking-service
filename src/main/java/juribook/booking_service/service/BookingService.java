@@ -1,6 +1,7 @@
 package juribook.booking_service.service;
 
 import juribook.booking_service.dto.request.CreateBookingRequest;
+import juribook.booking_service.dto.response.BookingHistoryResponse;
 import juribook.booking_service.dto.response.BookingResponse;
 import juribook.booking_service.entity.Booking;
 import juribook.booking_service.entity.BookingStatus;
@@ -24,19 +25,24 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Service métier pour la réservation de créneaux par les clients, leur
- * traitement par les avocats, leur annulation, et la publication des
- * événements associés sur Kafka.
+ * traitement par les avocats, leur annulation, l'historique client, et
+ * la publication des événements associés sur Kafka.
  *
  * ⚠️ Limite connue : confirmBooking, rejectBooking et
  * cancelBooking (côté avocat) ne vérifient PAS que le Booking appartient
  * bien à l'avocat authentifié, même limitation que sur
  * AvailabilityController/TimeSlotController (pas de résolution
  * authUserId → lawyerId sans appel au lawyer-service). Côté client en
- * revanche, l'appartenance EST vérifiée pour cancelBooking, car
- * Booking.clientId est directement l'authUserId extrait du JWT (pas
+ * revanche, l'appartenance EST vérifiée pour cancelBooking et getMyBookings,
+ * car Booking.clientId est directement l'authUserId extrait du JWT (pas
  * besoin d'appel inter-services). À corriger côté avocat avant la mise
  * en production.
  */
@@ -140,7 +146,7 @@ public class BookingService {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Annulation - client ou avocat, règle des 24h
+    //  Annulation  client ou avocat, règle des 24h
     // ══════════════════════════════════════════════════════════
     /**
      * Annule une réservation CONFIRMED, à la demande du client ou de
@@ -183,6 +189,41 @@ public class BookingService {
         slotEventPublisher.publishSlotReleased(booking.getLawyerId(), booking.getTimeSlotId());
 
         return BookingResponse.from(savedBooking);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Historique client
+    // ══════════════════════════════════════════════════════════
+    /**
+     * Historique complet des réservations d'un client (tous statuts
+     * confondus : PENDING, CONFIRMED, CANCELLED, COMPLETED), enrichi de
+     * la date/heure du créneau et trié du rendez-vous le plus récent au
+     * plus ancien.
+     *
+     * L'enrichissement (jointure applicative avec TimeSlot) se fait en
+     * une seule requête groupée (findAllById) plutôt qu'un aller-retour
+     * par réservation, pour éviter un N+1 sur un historique qui peut
+     * devenir long.
+     */
+    @Transactional(readOnly = true)
+    public List<BookingHistoryResponse> getMyBookings(Long clientId) {
+        List<Booking> bookings = bookingRepository.findByClientId(clientId);
+
+        if (bookings.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> timeSlotIds = bookings.stream().map(Booking::getTimeSlotId).toList();
+        Map<Long, TimeSlot> slotsById = timeSlotRepository.findAllById(timeSlotIds).stream()
+                .collect(Collectors.toMap(TimeSlot::getId, Function.identity()));
+
+        return bookings.stream()
+                .map(booking -> BookingHistoryResponse.from(booking, slotsById.get(booking.getTimeSlotId())))
+                .sorted(Comparator
+                        .comparing((BookingHistoryResponse r) -> r.getDate() != null ? r.getDate() : java.time.LocalDate.MIN)
+                        .thenComparing(r -> r.getStartTime() != null ? r.getStartTime() : java.time.LocalTime.MIN)
+                        .reversed())
+                .toList();
     }
 
     // ══════════════════════════════════════════════════════════
