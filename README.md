@@ -1,6 +1,6 @@
 # juribook-booking-service
 
-Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients avec protection contre la double réservation, confirmation/refus par les avocats, annulation encadrée par une règle des 24h, liste d'attente sur avocat complet, historique des réservations client, et publication d'événements Kafka à chaque changement d'état.
+Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients avec protection contre la double réservation, confirmation/refus par les avocats, annulation encadrée par une règle des 24h, liste d'attente sur avocat complet, historique des réservations client, tableau de bord des réservations avocat, et publication d'événements Kafka à chaque changement d'état.
 
 ## Stack
 
@@ -22,6 +22,7 @@ src/main/java/juribook/booking_service/
 │   ├── AvailabilityController.java       # POST/GET/DELETE /api/lawyers/{id}/availabilities
 │   ├── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
 │   ├── BookingController.java            # POST/GET /api/bookings + PATCH confirm/reject/cancel
+│   ├── LawyerBookingsController.java     # GET /api/lawyers/{id}/bookings — tableau de bord avocat
 │   └── WaitlistController.java           # POST/GET /api/waitlist/{lawyerId}
 ├── dto/
 │   ├── request/
@@ -67,12 +68,12 @@ src/main/java/juribook/booking_service/
 ├── repository/
 │   ├── AvailabilityRepository.java
 │   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate (verrou pessimiste)
-│   ├── BookingRepository.java            # Inclut findByClientId (historique)
+│   ├── BookingRepository.java            # Inclut findByClientId (historique) et findByLawyerId (tableau de bord)
 │   └── WaitlistRepository.java
 └── service/
     ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
     ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
-    ├── BookingService.java               # Réservation, confirmation/refus, annulation, historique, événements
+    ├── BookingService.java               # Réservation, confirmation/refus, annulation, historique, tableau de bord, événements
     ├── WaitlistService.java              # Inscription et consultation de la liste d'attente
     └── JwtService.java                   # Validation des tokens JWT (lecture seule)
 src/main/resources/
@@ -84,6 +85,15 @@ src/main/resources/
     ├── V4__create_bookings_table.sql
     ├── V5__add_unique_active_booking_per_slot.sql
     └── V6__create_waitlist_entries_table.sql
+src/test/java/juribook/booking_service/
+├── entity/
+│   └── TimeSlotTest.java                 # isBookable() - créneaux passés/futurs, statuts
+└── service/
+    ├── AvailabilityServiceTest.java      # Chevauchement, génération, idempotence
+    ├── TimeSlotServiceTest.java          # Chevauchement, blocage, suppression, consultation
+    ├── BookingServiceTest.java           # create/confirm/reject/cancel/getMyBookings, 409, règle 24h
+    ├── BookingLifecycleTest.java         # Cycle complet create→confirm→cancel et create→reject
+    └── WaitlistServiceTest.java          # Inscription, doublon, race condition, consultation
 ```
 
 ## Lancer en local (hors Docker)
@@ -98,6 +108,12 @@ mvn spring-boot:run
 ```bash
 # Depuis juribook-docker/docker/
 docker compose up -d postgres-booking booking-service
+```
+
+## Lancer les tests
+
+```bash
+mvn test
 ```
 
 ## Swagger UI
@@ -130,6 +146,7 @@ docker compose up -d postgres-booking booking-service
 | `DELETE` | `/api/lawyers/{lawyerId}/slots/{id}` | Supprimer un créneau (refusé si BOOKED ou COMPLETED) |
 | `POST` | `/api/lawyers/{lawyerId}/slots/block` | Bloquer une période (congés, indisponibilité) |
 | `POST` | `/api/lawyers/{lawyerId}/slots/{id}/unblock` | Débloquer un créneau |
+| `GET` | `/api/lawyers/{lawyerId}/bookings` | Tableau de bord : toutes les réservations de l'avocat, triées de la plus proche à la plus lointaine |
 | `PATCH` | `/api/bookings/{id}/confirm` | Confirmer une demande de réservation PENDING, publie `booking.confirmed` |
 | `PATCH` | `/api/bookings/{id}/reject` | Refuser une demande de réservation PENDING, publie `booking.cancelled` + `slot.released` |
 
@@ -145,7 +162,7 @@ docker compose up -d postgres-booking booking-service
 
 | Méthode | URL | Description |
 |---|---|---|
-| `PATCH` | `/api/bookings/{id}/cancel` | Annuler une réservation CONFIRMED, refusé si moins de 24h avant le rendez-vous — publie `booking.cancelled` + `slot.released` |
+| `PATCH` | `/api/bookings/{id}/cancel` | Annuler une réservation CONFIRMED, refusé si moins de 24h avant le rendez-vous, publie `booking.cancelled` + `slot.released` |
 
 ---
 
@@ -193,7 +210,7 @@ GET http://localhost:8083/api/lawyers/1/availabilities
 ```
 GET http://localhost:8083/api/lawyers/1/slots?date=2026-07-06
 ```
-Mode `date` : retourne uniquement les créneaux **AVAILABLE** de ce jour précis — usage typique côté client cherchant un rendez-vous.
+Mode `date` : retourne uniquement les créneaux **AVAILABLE** de ce jour précis, usage typique côté client cherchant un rendez-vous.
 
 ---
 
@@ -317,7 +334,7 @@ Réponse - **409 Conflict** si le créneau 67 est déjà `BOOKED` :
     "message": "Ce créneau est déjà réservé"
 }
 ```
-Garanti même en cas de requêtes simultanées sur le même créneau, voir [Protection anti-concurrence](#protection-anti-concurrence-sprint-43).
+Garanti même en cas de requêtes simultanées sur le même créneau, voir [Protection anti-concurrence](#protection-anti-concurrence).
 
 ---
 
@@ -382,7 +399,7 @@ Refusé — **409** si déjà inscrit sur la liste d'attente de cet avocat :
     "message": "Vous êtes déjà inscrit sur la liste d'attente de cet avocat"
 }
 ```
-⚠️ Aucune vérification que l'avocat est réellement complet (aucun créneau `AVAILABLE`) — cf. [Limites connues](#limites-connues).
+⚠️ Aucune vérification que l'avocat est réellement complet (aucun créneau `AVAILABLE`), cf. [Limites connues](#limites-connues).
 
 ---
 
@@ -424,6 +441,40 @@ Réponse - 200, tous statuts confondus, triée du rendez-vous le plus récent au
 
 ---
 
+### Consulter le tableau de bord d'un avocat
+```
+GET http://localhost:8083/api/lawyers/1/bookings
+Authorization: Bearer <token_jwt_avocat>
+```
+Réponse - 200, tous statuts confondus, triée du rendez-vous **le plus proche au plus lointain** (contrairement à l'historique client, ici c'est une file à traiter, pas un journal) :
+```json
+[
+    {
+        "id": 2,
+        "lawyerId": 1,
+        "timeSlotId": 15,
+        "status": "PENDING",
+        "reason": "Consultation initiale",
+        "date": "2026-07-03",
+        "startTime": "10:00:00",
+        "endTime": "10:30:00",
+        "createdAt": "2026-07-01T..."
+    },
+    {
+        "id": 1,
+        "lawyerId": 1,
+        "timeSlotId": 67,
+        "status": "CONFIRMED",
+        "date": "2026-07-06",
+        "startTime": "09:00:00",
+        "endTime": "09:30:00",
+        "createdAt": "2026-06-30T..."
+    }
+]
+```
+
+---
+
 ### Cas d'erreur
 
 ```
@@ -446,6 +497,7 @@ PATCH /bookings/{id}/cancel à moins de 24h du rendez-vous    → 400 "Annulatio
 PATCH /bookings/{id}/cancel par un client non propriétaire   → 403 "Cette réservation n'appartient pas à ce client"
 POST /waitlist/{lawyerId} déjà inscrit                        → 409 "Vous êtes déjà inscrit sur la liste d'attente de cet avocat"
 GET /bookings d'un client sans aucune réservation              → 200 []
+GET /lawyers/{lawyerId}/bookings d'un avocat sans réservation   → 200 []
 Toute route LAWYER sans token                               → 401 Unauthorized
 Toute route LAWYER avec token CLIENT                         → 403 Forbidden
 Toute route CLIENT avec token LAWYER                          → 403 Forbidden
@@ -483,6 +535,12 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ```bash
 docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT b.id, b.status, b.reason, t.date, t.start_time FROM bookings b JOIN time_slots t ON t.id = b.time_slot_id WHERE b.client_id = 1 ORDER BY t.date DESC, t.start_time DESC;"
+```
+
+### Lister les réservations d'un avocat, enrichies de la date du créneau
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT b.id, b.status, b.client_id, t.date, t.start_time FROM bookings b JOIN time_slots t ON t.id = b.time_slot_id WHERE b.lawyer_id = 1 ORDER BY t.date ASC, t.start_time ASC;"
 ```
 
 ### Compter les réservations par statut
@@ -574,9 +632,13 @@ CONFIRMED  → COMPLETED  (rendez-vous honoré - sprint à venir)
 ```
 Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` (Sprint 4.2) le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction. Chaque transition publie un événement Kafka correspondant — voir [Kafka](#kafka).
 
-### Historique client
+### Historique client vs tableau de bord avocat
 
-`BookingService.getMyBookings` récupère toutes les réservations du client (`BookingRepository.findByClientId`), résout la date/heure de chaque créneau associé en une seule requête groupée (`TimeSlotRepository.findAllById`, pas un aller-retour par réservation), puis trie le résultat par date/heure de rendez-vous décroissante. Le statut `COMPLETED` n'étant pas encore posé automatiquement par le système (aucun job ne fait encore la transition `CONFIRMED → COMPLETED`), la distinction passé/à venir dans l'UI cliente repose en pratique sur la comparaison date/heure du créneau avec l'instant présent, pas uniquement sur le statut.
+`BookingService` expose deux vues sur les mêmes données, toutes deux enrichies de la date/heure du créneau via une jointure applicative groupée (`TimeSlotRepository.findAllById`, jamais un aller-retour par réservation) :
+- `getMyBookings(clientId)` : historique du client, trié du rendez-vous **le plus récent au plus ancien** (`BookingRepository.findByClientId`).
+- `getLawyerBookings(lawyerId)` : file de traitement de l'avocat, triée du rendez-vous **le plus proche au plus lointain** (`BookingRepository.findByLawyerId`), c'est une file à traiter, pas un journal, donc l'échéance la plus urgente doit remonter en premier.
+
+Les deux méthodes partagent la même logique d'enrichissement (`BookingService.enrichAndSort`), seul l'ordre de tri diffère (paramètre booléen). Le statut `COMPLETED` n'étant pas encore posé automatiquement par le système (aucun job ne fait encore la transition `CONFIRMED → COMPLETED`), la distinction passé/à venir côté UI repose en pratique sur la comparaison date/heure du créneau avec l'instant présent, pas uniquement sur le statut.
 
 ### Génération des créneaux
 
@@ -595,9 +657,9 @@ La réservation (`BookingService.createBooking`) lit le `TimeSlot` via `TimeSlot
 
 En filet de sécurité supplémentaire (au cas où le verrou serait contourné, ex. accès direct en base), un index unique partiel (`V5__add_unique_active_booking_per_slot.sql`) empêche plus d'une réservation **active** (statut différent de `CANCELLED`) par créneau au niveau base de données. Une violation de cette contrainte est aussi convertie en 409.
 
-### Règle des 24h (Sprint 4.5)
+### Règle des 24h
 
-`BookingService.validateCancellationDeadline` compare `now()` à `(date + startTime du TimeSlot) - 24h`. Si l'instant présent dépasse cette limite, l'annulation est refusée avec un message explicite donnant la date/heure du rendez-vous. Cette règle ne s'applique qu'à `/cancel` (réservations `CONFIRMED`) — `/reject` (réservations encore `PENDING`) n'y est pas soumis, puisque rien n'a été confirmé côté agenda de l'avocat.
+`BookingService.validateCancellationDeadline` compare `now()` à `(date + startTime du TimeSlot) - 24h`. Si l'instant présent dépasse cette limite, l'annulation est refusée avec un message explicite donnant la date/heure du rendez-vous. Cette règle ne s'applique qu'à `/cancel` (réservations `CONFIRMED`), `/reject` (réservations encore `PENDING`) n'y est pas soumis, puisque rien n'a été confirmé côté agenda de l'avocat.
 
 ---
 
@@ -625,7 +687,7 @@ En production Docker, `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` est déjà po
 | `booking-events` | `BookingService` (ce dépôt) | `booking.created`, `booking.confirmed`, `booking.cancelled` | `POST /bookings`, `PATCH /confirm`, `PATCH /reject`, `PATCH /cancel` |
 | `slot-events` | `BookingService` (ce dépôt) | `slot.released` | `PATCH /reject`, `PATCH /cancel` (le créneau redevient AVAILABLE) |
 
-`slot-events` est consommé par le **notification-service** (dépôt séparé, `juribook-notification-service`) — sur réception de `slot.released`, il rappelle `GET /api/waitlist/{lawyerId}` sur ce service pour résoudre les clients à notifier. Le refus (`/reject`) d'une demande **PENDING** publie `booking.cancelled` (pas d'événement `booking.rejected` distinct : `BookingStatus` n'a que `PENDING` / `CONFIRMED` / `COMPLETED` / `CANCELLED`, cf. [Booking.java](#cycle-de-vie-dun-booking-bookingstatus)).
+`slot-events` est consommé par le **notification-service** (dépôt séparé, `juribook-notification-service`), sur réception de `slot.released`, il rappelle `GET /api/waitlist/{lawyerId}` sur ce service pour résoudre les clients à notifier. Le refus (`/reject`) d'une demande **PENDING** publie `booking.cancelled` (pas d'événement `booking.rejected` distinct : `BookingStatus` n'a que `PENDING` / `CONFIRMED` / `COMPLETED` / `CANCELLED`, cf. [Booking.java](#cycle-de-vie-dun-booking-bookingstatus)).
 
 ### Format des payloads
 
@@ -643,7 +705,7 @@ En production Docker, `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` est déjà po
 }
 ```
 
-`slot-events` (`SlotReleasedEvent`) — volontairement minimal, conforme au cahier des charges (`lawyerId` + `slotId`) :
+`slot-events` (`SlotReleasedEvent`) - volontairement minimal, conforme au cahier des charges (`lawyerId` + `slotId`) :
 ```json
 {
     "eventType": "slot.released",
@@ -669,6 +731,34 @@ docker exec -it juribook-kafka kafka-console-consumer --bootstrap-server localho
 
 ---
 
+## Tests
+
+63 tests unitaires (JUnit 5 + Mockito + AssertJ), aucune dépendance à une base de données ou un broker Kafka réels, tous les repositories, publishers d'événements et clients externes sont mockés.
+
+```bash
+mvn test
+```
+
+### Organisation
+
+| Fichier | Ce qu'il couvre |
+|---|---|
+| `AvailabilityServiceTest.java` | Chevauchement de disponibilités récurrentes, génération des créneaux, idempotence |
+| `TimeSlotServiceTest.java` | Chevauchement de créneaux ponctuels, blocage/déblocage de période, suppression, consultation filtrée |
+| `TimeSlotTest.java` | `isBookable()`, créneaux passés/futurs, tous les statuts |
+| `BookingServiceTest.java` | Réservation, confirmation, refus, annulation, historique client, cas nominaux et erreurs, méthode par méthode |
+| `BookingLifecycleTest.java` | **Cycle complet** : create → confirm → cancel et create → reject enchaînés sur la même instance, vérifie la cohérence `TimeSlot`/`Booking` à chaque étape |
+| `WaitlistServiceTest.java` | Inscription, doublon (vérification applicative et race condition via `DataIntegrityViolationException`), consultation triée |
+
+### Points spécifiquement couverts
+
+- **Double réservation** : verrou pessimiste (`findByIdForUpdate`) contourné en simulant deux lectures successives du même créneau ; filet de sécurité BDD testé via `DataIntegrityViolationException` sur `save()`.
+- **Annulation tardive** : créneau positionné à moins de 24h dans `cancelBooking_throws_whenLessThan24hBeforeAppointment`, avec un garde-fou qui ignore le test si l'horaire calculé franchit minuit pendant l'exécution (évite un faux négatif rare en CI) ; cas symétrique `cancelBooking_succeeds_whenExactlyMoreThan24hBefore`.
+- **Cycle complet** : `BookingLifecycleTest` enchaîne les transitions réelles plutôt que de les tester isolément, avec vérification qu'aucun événement Kafka superflu n'est publié en trop (`times(1)` sur chaque type d'événement).
+- **Liste d'attente** : les deux chemins vers `AlreadyOnWaitlistException` (contrôle applicatif préalable et contrainte UNIQUE en base), et vérification que le filtrage par avocat est délégué au repository plutôt que fait en mémoire (évite une fuite de données entre avocats).
+
+---
+
 ## Sécurité JWT
 
 Le booking-service **ne génère pas** de JWT, il valide uniquement les tokens émis par l'auth-service grâce au secret partagé (`jwt.secret`).
@@ -682,8 +772,9 @@ Les claims extraits du token :
 
 ## Limites connues
 
-- **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController` et `TimeSlotController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). À corriger avant la mise en production.
+- **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController`, `TimeSlotController` et `LawyerBookingsController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). N'importe quel compte `LAWYER` peut donc consulter le tableau de bord d'un autre avocat. À corriger avant la mise en production.
 - **Créneaux passés du jour même non filtrés à l'affichage** : `GET /slots?date=...` filtre par jour (`AVAILABLE` uniquement) mais ne tient pas compte de l'heure. Un créneau du jour déjà passé dans la journée peut donc encore apparaître dans la réponse, alors qu'il n'est plus réservable (`TimeSlot.isBookable()` existe mais n'est pas encore branché sur `TimeSlotService.getSlots()`).
 - **Aucune vérification d'appartenance côté avocat sur `confirm`/`reject`/`cancel`** : même limitation de fond que ci-dessus (pas de résolution `authUserId → lawyerId` sans appel au `lawyer-service`), mais plus sensible ici, n'importe quel compte `LAWYER` peut confirmer, refuser ou annuler la réservation d'un **autre** avocat. Côté client, la vérification est en revanche active sur `/cancel` (`Booking.clientId` = `authUserId` directement, pas d'appel inter-services nécessaire) : un client ne peut annuler que ses propres réservations (403 sinon). À corriger côté avocat avant la mise en production.
 - **Publication d'événements Kafka non transactionnelle avec la base** (pas de pattern Outbox) : cf. [Limites assumées pour ce sprint](#limites-assumées-pour-ce-sprint) dans la section Kafka. Un échec de publication après un commit BDD réussi ne fait pas échouer la requête HTTP, mais l'événement est perdu (seulement logué en erreur).
 - **Inscription à la liste d'attente sans vérifier que l'avocat est réellement complet** : `POST /api/waitlist/{lawyerId}` accepte l'inscription même si l'avocat a des créneaux `AVAILABLE`. Le seul garde-fou est anti-doublon (contrainte `UNIQUE(lawyer_id, client_id)`). Ajout simple si besoin, via `TimeSlotRepository.findAvailableSlots`.
+- **Aucun nom de client sur le tableau de bord avocat** : `GET /api/lawyers/{lawyerId}/bookings` ne retourne que `clientId` (colonne de corrélation), il n'existe pas d'endpoint public dans l'auth-service pour résoudre un id en nom/email. Le frontend affiche `Client #<id>` en attendant.
