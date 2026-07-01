@@ -7,6 +7,7 @@ import juribook.booking_service.entity.BookingStatus;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
 import juribook.booking_service.event.BookingEventPublisher;
+import juribook.booking_service.event.SlotEventPublisher;
 import juribook.booking_service.exception.BookingConflictException;
 import juribook.booking_service.exception.BookingNotFoundException;
 import juribook.booking_service.exception.InvalidBookingException;
@@ -50,7 +51,8 @@ public class BookingService {
 
     private final BookingRepository bookingRepository;
     private final TimeSlotRepository timeSlotRepository;
-    private final BookingEventPublisher eventPublisher;
+    private final BookingEventPublisher bookingEventPublisher;
+    private final SlotEventPublisher slotEventPublisher;
 
     // ══════════════════════════════════════════════════════════
     //  Réservation par le client
@@ -88,7 +90,7 @@ public class BookingService {
         log.info("Réservation créée : bookingId={}, clientId={}, lawyerId={}, timeSlotId={}",
                 saved.getId(), clientId, slot.getLawyerId(), slot.getId());
 
-        eventPublisher.publishBookingCreated(saved);
+        bookingEventPublisher.publishBookingCreated(saved);
 
         return BookingResponse.from(saved);
     }
@@ -108,7 +110,7 @@ public class BookingService {
         Booking saved = bookingRepository.save(booking);
 
         log.info("Réservation confirmée : bookingId={}, lawyerId={}", bookingId, lawyerId);
-        eventPublisher.publishBookingConfirmed(saved);
+        bookingEventPublisher.publishBookingConfirmed(saved);
 
         return BookingResponse.from(saved);
     }
@@ -131,7 +133,8 @@ public class BookingService {
 
         log.info("Réservation refusée : bookingId={}, lawyerId={}, timeSlotId={} libéré",
                 bookingId, lawyerId, booking.getTimeSlotId());
-        eventPublisher.publishBookingCancelled(savedBooking);
+        bookingEventPublisher.publishBookingCancelled(savedBooking);
+        slotEventPublisher.publishSlotReleased(booking.getLawyerId(), booking.getTimeSlotId());
 
         return BookingResponse.from(savedBooking);
     }
@@ -176,7 +179,8 @@ public class BookingService {
 
         log.info("Réservation annulée : bookingId={}, actorId={}, actorRole={}, timeSlotId={} libéré",
                 bookingId, actorId, actorRole, slot.getId());
-        eventPublisher.publishBookingCancelled(savedBooking);
+        bookingEventPublisher.publishBookingCancelled(savedBooking);
+        slotEventPublisher.publishSlotReleased(booking.getLawyerId(), booking.getTimeSlotId());
 
         return BookingResponse.from(savedBooking);
     }
