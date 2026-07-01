@@ -34,6 +34,7 @@ import java.util.List;
  *   DELETE /api/lawyers/{lawyerId}/slots/{id}              → LAWYER (supprimer)
  *   POST   /api/lawyers/{lawyerId}/slots/block             → LAWYER (bloquer une période)
  *   POST   /api/lawyers/{lawyerId}/slots/{id}/unblock      → LAWYER (débloquer)
+ *   GET    /api/lawyers/{lawyerId}/bookings                → LAWYER (tableau de bord)
  *   POST   /api/bookings                                   → CLIENT (réserver)
  *   GET    /api/bookings                                   → CLIENT (historique)
  *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer)
@@ -65,23 +66,25 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.GET, "/api/waitlist/*").permitAll()
                     .requestMatchers("/actuator/health").permitAll()
                     .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                    // ── Routes LAWYER - disponibilités récurrentes
+                    // ── Routes LAWYER — disponibilités récurrentes
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/availabilities").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/availabilities/*").hasRole("LAWYER")
-                    // ── Routes LAWYER - créneaux ponctuels et congés
+                    // ── Routes LAWYER — créneaux ponctuels et congés
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/slots/*").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/block").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
-                    // ── Routes CLIENT - réservation et historique
+                    // ── Route LAWYER — tableau de bord réservations
+                    .requestMatchers(HttpMethod.GET, "/api/lawyers/*/bookings").hasRole("LAWYER")
+                    // ── Routes CLIENT — réservation et historique
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
                     .requestMatchers(HttpMethod.GET,  "/api/bookings").hasRole("CLIENT")
-                    // ── Routes LAWYER - confirmation/refus
+                    // ── Routes LAWYER — confirmation/refus
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/confirm").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/reject").hasRole("LAWYER")
-                    // ── Route CLIENT ou LAWYER - annulation
+                    // ── Route CLIENT ou LAWYER — annulation
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/cancel").hasAnyRole("CLIENT", "LAWYER")
-                    // ── Route CLIENT - liste d'attente
+                    // ── Route CLIENT — liste d'attente
                     .requestMatchers(HttpMethod.POST, "/api/waitlist/*").hasRole("CLIENT")
                     // ── Tout le reste → authentification requise
                     .anyRequest().authenticated()

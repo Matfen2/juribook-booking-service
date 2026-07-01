@@ -33,18 +33,20 @@ import java.util.stream.Collectors;
 
 /**
  * Service métier pour la réservation de créneaux par les clients, leur
- * traitement par les avocats, leur annulation, l'historique client, et
- * la publication des événements associés sur Kafka.
+ * traitement par les avocats, leur annulation, l'historique client, le
+ * tableau de bord avocat, et la publication des événements associés sur
+ * Kafka.
  *
- * ⚠️ Limite connue : confirmBooking, rejectBooking et
- * cancelBooking (côté avocat) ne vérifient PAS que le Booking appartient
- * bien à l'avocat authentifié, même limitation que sur
+ * ⚠️ Limite connue : confirmBooking,
+ * rejectBooking, cancelBooking (côté avocat) et getLawyerBookings ne
+ * vérifient PAS que le Booking/lawyerId appartient bien à l'avocat
+ * authentifié, même limitation que sur
  * AvailabilityController/TimeSlotController (pas de résolution
  * authUserId → lawyerId sans appel au lawyer-service). Côté client en
- * revanche, l'appartenance EST vérifiée pour cancelBooking et getMyBookings,
- * car Booking.clientId est directement l'authUserId extrait du JWT (pas
- * besoin d'appel inter-services). À corriger côté avocat avant la mise
- * en production.
+ * revanche, l'appartenance EST vérifiée pour cancelBooking et
+ * getMyBookings, car Booking.clientId est directement l'authUserId
+ * extrait du JWT (pas besoin d'appel inter-services). À corriger côté
+ * avocat avant la mise en production.
  */
 @Service
 @RequiredArgsConstructor
@@ -146,16 +148,11 @@ public class BookingService {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Annulation  client ou avocat, règle des 24h
+    //  Annulation - client ou avocat, règle des 24h
     // ══════════════════════════════════════════════════════════
     /**
      * Annule une réservation CONFIRMED, à la demande du client ou de
      * l'avocat. Refusée si le rendez-vous a lieu dans moins de 24h.
-     *
-     * Une réservation PENDING ne passe pas par ce endpoint : côté avocat,
-     * c'est /reject (pas de règle des 24h, rien n'était confirmé). Côté
-     * client, une demande PENDING peut être laissée à l'avocat pour
-     * refus, il n'y a pas encore de rendez-vous "confirmé" à décommander.
      *
      * @param actorId   authUserId extrait du JWT de l'appelant
      * @param actorRole "CLIENT" ou "LAWYER", extrait du rôle du JWT
@@ -169,7 +166,6 @@ public class BookingService {
         }
         // Côté LAWYER : pas de vérification d'appartenance possible sans
         // appel au lawyer-service, cf. limite connue en tête de classe.
-
         TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId())
                 .orElseThrow(() -> new TimeSlotNotFoundException(
                     "Créneau introuvable pour cette réservation : id=" + booking.getTimeSlotId()));
@@ -194,21 +190,35 @@ public class BookingService {
     // ══════════════════════════════════════════════════════════
     //  Historique client
     // ══════════════════════════════════════════════════════════
-    /**
-     * Historique complet des réservations d'un client (tous statuts
-     * confondus : PENDING, CONFIRMED, CANCELLED, COMPLETED), enrichi de
-     * la date/heure du créneau et trié du rendez-vous le plus récent au
-     * plus ancien.
-     *
-     * L'enrichissement (jointure applicative avec TimeSlot) se fait en
-     * une seule requête groupée (findAllById) plutôt qu'un aller-retour
-     * par réservation, pour éviter un N+1 sur un historique qui peut
-     * devenir long.
-     */
     @Transactional(readOnly = true)
     public List<BookingHistoryResponse> getMyBookings(Long clientId) {
         List<Booking> bookings = bookingRepository.findByClientId(clientId);
+        return enrichAndSort(bookings, true);
+    }
 
+    // ══════════════════════════════════════════════════════════
+    //  Tableau de bord avocat
+    // ══════════════════════════════════════════════════════════
+    /**
+     * Toutes les réservations d'un avocat (tous statuts confondus),
+     * enrichies de la date/heure du créneau, triées du rendez-vous le
+     * plus proche au plus lointain (contrairement à l'historique client,
+     *  ici c'est une file à traiter, pas un journal, donc l'échéance la
+     * plus urgente doit remonter en premier).
+     */
+    @Transactional(readOnly = true)
+    public List<BookingHistoryResponse> getLawyerBookings(Long lawyerId) {
+        List<Booking> bookings = bookingRepository.findByLawyerId(lawyerId);
+        return enrichAndSort(bookings, false);
+    }
+
+    /**
+     * Jointure applicative Booking + TimeSlot en une seule requête
+     * groupée (findAllById, pas de N+1), puis tri par date/heure de
+     * rendez-vous, décroissant pour un historique, croissant pour une
+     * file d'attente à traiter.
+     */
+    private List<BookingHistoryResponse> enrichAndSort(List<Booking> bookings, boolean mostRecentFirst) {
         if (bookings.isEmpty()) {
             return List.of();
         }
@@ -217,12 +227,13 @@ public class BookingService {
         Map<Long, TimeSlot> slotsById = timeSlotRepository.findAllById(timeSlotIds).stream()
                 .collect(Collectors.toMap(TimeSlot::getId, Function.identity()));
 
+        Comparator<BookingHistoryResponse> byAppointmentDateTime = Comparator
+                .comparing((BookingHistoryResponse r) -> r.getDate() != null ? r.getDate() : java.time.LocalDate.MIN)
+                .thenComparing(r -> r.getStartTime() != null ? r.getStartTime() : java.time.LocalTime.MIN);
+
         return bookings.stream()
                 .map(booking -> BookingHistoryResponse.from(booking, slotsById.get(booking.getTimeSlotId())))
-                .sorted(Comparator
-                        .comparing((BookingHistoryResponse r) -> r.getDate() != null ? r.getDate() : java.time.LocalDate.MIN)
-                        .thenComparing(r -> r.getStartTime() != null ? r.getStartTime() : java.time.LocalTime.MIN)
-                        .reversed())
+                .sorted(mostRecentFirst ? byAppointmentDateTime.reversed() : byAppointmentDateTime)
                 .toList();
     }
 

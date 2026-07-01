@@ -13,4 +13,8 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     // date/heure de rendez-vous se fait en service (nécessite TimeSlot,
     // pas disponible ici via une simple dérivation de nom de méthode).
     List<Booking> findByClientId(Long clientId);
+
+    // Tableau de bord des réservations d'un avocat, même
+    // principe de tri en service.
+    List<Booking> findByLawyerId(Long lawyerId);
 }

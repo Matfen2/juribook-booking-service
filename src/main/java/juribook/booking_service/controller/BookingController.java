@@ -34,6 +34,12 @@ import java.util.List;
  *   PATCH /api/bookings/{id}/reject  → LAWYER           (refuser une demande PENDING)
  *   PATCH /api/bookings/{id}/cancel  → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
  *
+ * Le tableau de bord avocat (GET /api/lawyers/{lawyerId}/bookings)
+ * est exposé par LawyerBookingsController, pas ici : @RequestMapping de
+ * classe empêcherait de monter un préfixe /api/lawyers/... différent
+ * dans ce controller-ci, et ça reste cohérent avec le regroupement déjà
+ * utilisé par AvailabilityController/TimeSlotController.
+ *
  * L'identité de l'appelant (clientId, ou actorId + actorRole pour
  * confirm/reject/cancel) n'est jamais prise dans le corps de la requête :
  * elle est extraite du JWT (claims "id" et "role", placés en principal
@@ -84,9 +90,8 @@ public class BookingController {
         summary = "Historique de mes réservations",
         description = """
             Retourne toutes les réservations du client authentifié (tous
-            statuts confondus : PENDING, CONFIRMED, CANCELLED, COMPLETED),
-            enrichies de la date/heure du créneau, triées du rendez-vous
-            le plus récent au plus ancien.
+            statuts confondus), enrichies de la date/heure du créneau,
+            triées du rendez-vous le plus récent au plus ancien.
             """
     )
     @ApiResponses({
@@ -149,9 +154,6 @@ public class BookingController {
             Le client ou l'avocat annule une réservation CONFIRMED. Refusée
             avec un message explicite si le rendez-vous a lieu dans moins
             de 24h. Le créneau est immédiatement libéré (AVAILABLE).
-
-            Pour une réservation encore PENDING, utiliser /confirm ou /reject
-            (pas de règle des 24h, rien n'a encore été confirmé).
             """
     )
     @ApiResponses({
