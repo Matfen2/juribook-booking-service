@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,19 +24,20 @@ import org.springframework.web.bind.annotation.RestController;
  * Controller REST pour la réservation de créneaux et leur traitement.
  *
  * Routes :
- *   POST  /api/bookings              → CLIENT (réserver un créneau)
- *   PATCH /api/bookings/{id}/confirm → LAWYER  (accepter une demande PENDING)
- *   PATCH /api/bookings/{id}/reject  → LAWYER  (refuser une demande PENDING)
+ *   POST  /api/bookings              → CLIENT          (réserver un créneau)
+ *   PATCH /api/bookings/{id}/confirm → LAWYER           (accepter une demande PENDING)
+ *   PATCH /api/bookings/{id}/reject  → LAWYER           (refuser une demande PENDING)
+ *   PATCH /api/bookings/{id}/cancel  → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
  *
- * Le clientId (pour la réservation) et le lawyerId (pour confirm/reject,
- * utilisé uniquement pour le log, cf. limite connue dans BookingService)
- * ne sont jamais pris dans le corps de la requête : ils sont extraits du
- * JWT (claim "id", placé en principal par JwtAuthenticationFilter).
+ * L'identité de l'appelant (clientId, ou actorId + actorRole pour
+ * confirm/reject/cancel) n'est jamais prise dans le corps de la requête :
+ * elle est extraite du JWT (claims "id" et "role", placés en principal
+ * et en authority par JwtAuthenticationFilter).
  */
 @RestController
 @RequestMapping("/api/bookings")
 @RequiredArgsConstructor
-@Tag(name = "Réservations", description = "Réservation de créneaux par les clients, confirmation/refus par les avocats")
+@Tag(name = "Réservations", description = "Réservation, confirmation, refus et annulation de créneaux")
 public class BookingController {
 
     private final BookingService bookingService;
@@ -111,5 +113,43 @@ public class BookingController {
 
         Long lawyerAuthUserId = (Long) authentication.getPrincipal();
         return ResponseEntity.ok(bookingService.rejectBooking(lawyerAuthUserId, id));
+    }
+
+    // ── PATCH /api/bookings/{id}/cancel ───────────────────────
+    @PatchMapping("/{id}/cancel")
+    @Operation(
+        summary = "Annuler une réservation confirmée",
+        description = """
+            Le client ou l'avocat annule une réservation CONFIRMED. Refusée
+            avec un message explicite si le rendez-vous a lieu dans moins
+            de 24h. Le créneau est immédiatement libéré (AVAILABLE).
+
+            Pour une réservation encore PENDING, utiliser /confirm ou /reject
+            (pas de règle des 24h, rien n'a encore été confirmé).
+            """
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Réservation annulée, créneau libéré"),
+        @ApiResponse(responseCode = "400", description = "Statut invalide (pas CONFIRMED) ou moins de 24h avant le rendez-vous"),
+        @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
+        @ApiResponse(responseCode = "403", description = "Cette réservation n'appartient pas à ce client"),
+        @ApiResponse(responseCode = "404", description = "Réservation ou créneau introuvable")
+    })
+    public ResponseEntity<BookingResponse> cancelBooking(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        Long actorId = (Long) authentication.getPrincipal();
+        String actorRole = extractRole(authentication);
+        return ResponseEntity.ok(bookingService.cancelBooking(actorId, actorRole, id));
+    }
+
+    // ── Helper ─────────────────────────────────────────────────
+    private String extractRole(Authentication authentication) {
+        return authentication.getAuthorities().stream()
+                .findFirst()
+                .map(GrantedAuthority::getAuthority)
+                .map(authority -> authority.replace("ROLE_", ""))
+                .orElse("");
     }
 }

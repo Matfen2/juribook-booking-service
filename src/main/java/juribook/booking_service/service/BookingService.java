@@ -16,17 +16,35 @@ import juribook.booking_service.repository.TimeSlotRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
 /**
- * Service métier pour la réservation de créneaux par les clients et leur
- * traitement par les avocats.
+ * Service métier pour la réservation de créneaux par les clients, leur
+ * traitement par les avocats, et leur annulation.
+ *
+ * ⚠️ Limite connue : confirmBooking, rejectBooking et
+ * cancelBooking (côté avocat) ne vérifient PAS que le Booking appartient
+ * bien à l'avocat authentifié, même limitation que sur
+ * AvailabilityController/TimeSlotController (pas de résolution
+ * authUserId → lawyerId sans appel au lawyer-service). Côté client en
+ * revanche, l'appartenance EST vérifiée pour cancelBooking, car
+ * Booking.clientId est directement l'authUserId extrait du JWT (pas
+ * besoin d'appel inter-services). À corriger côté avocat avant la mise
+ * en production.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class BookingService {
+
+    private static final int CANCELLATION_DEADLINE_HOURS = 24;
+    private static final DateTimeFormatter DEADLINE_FORMATTER =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy 'à' HH:mm");
 
     private final BookingRepository bookingRepository;
     private final TimeSlotRepository timeSlotRepository;
@@ -79,7 +97,7 @@ public class BookingService {
      */
     @Transactional
     public BookingResponse confirmBooking(Long lawyerId, Long bookingId) {
-        Booking booking = getPendingBookingOrThrow(bookingId);
+        Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.PENDING);
 
         booking.setStatus(BookingStatus.CONFIRMED);
         Booking saved = bookingRepository.save(booking);
@@ -92,43 +110,104 @@ public class BookingService {
      * L'avocat refuse une demande de réservation en attente.
      * Le Booking passe en CANCELLED et le créneau est immédiatement
      * libéré (retour à AVAILABLE) pour redevenir réservable par un
-     * autre client.
+     * autre client. Pas de règle des 24h ici : la demande n'a jamais
+     * été confirmée, rien n'a été engagé côté agenda de l'avocat.
      */
     @Transactional
     public BookingResponse rejectBooking(Long lawyerId, Long bookingId) {
-        Booking booking = getPendingBookingOrThrow(bookingId);
+        Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.PENDING);
 
         booking.setStatus(BookingStatus.CANCELLED);
         Booking savedBooking = bookingRepository.save(booking);
 
+        releaseSlot(booking);
+
+        log.info("Réservation refusée : bookingId={}, lawyerId={}, timeSlotId={} libéré",
+                bookingId, lawyerId, booking.getTimeSlotId());
+        return BookingResponse.from(savedBooking);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Annulation - client ou avocat, règle des 24h
+    // ══════════════════════════════════════════════════════════
+    /**
+     * Annule une réservation CONFIRMED, à la demande du client ou de
+     * l'avocat. Refusée si le rendez-vous a lieu dans moins de 24h.
+     *
+     * Une réservation PENDING ne passe pas par ce endpoint : côté avocat,
+     * c'est /reject (pas de règle des 24h, rien n'était confirmé). Côté
+     * client, une demande PENDING peut être laissée à l'avocat pour
+     * refus, il n'y a pas encore de rendez-vous "confirmé" à décommander.
+     *
+     * @param actorId   authUserId extrait du JWT de l'appelant
+     * @param actorRole "CLIENT" ou "LAWYER", extrait du rôle du JWT
+     */
+    @Transactional
+    public BookingResponse cancelBooking(Long actorId, String actorRole, Long bookingId) {
+        Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.CONFIRMED);
+
+        if ("CLIENT".equals(actorRole) && !booking.getClientId().equals(actorId)) {
+            throw new AccessDeniedException("Cette réservation n'appartient pas à ce client");
+        }
+        // Côté LAWYER : pas de vérification d'appartenance possible sans
+        // appel au lawyer-service, cf. limite connue en tête de classe.
+
+        TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId())
+                .orElseThrow(() -> new TimeSlotNotFoundException(
+                    "Créneau introuvable pour cette réservation : id=" + booking.getTimeSlotId()));
+
+        validateCancellationDeadline(slot);
+
+        booking.setStatus(BookingStatus.CANCELLED);
+        Booking savedBooking = bookingRepository.save(booking);
+
+        slot.setStatus(SlotStatus.AVAILABLE);
+        slot.setBookingId(null);
+        timeSlotRepository.save(slot);
+
+        log.info("Réservation annulée : bookingId={}, actorId={}, actorRole={}, timeSlotId={} libéré",
+                bookingId, actorId, actorRole, slot.getId());
+        return BookingResponse.from(savedBooking);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Helpers privés
+    // ══════════════════════════════════════════════════════════
+    private Booking getBookingInStatusOrThrow(Long bookingId, BookingStatus expectedStatus) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException(
+                    "Réservation introuvable : id=" + bookingId));
+
+        if (booking.getStatus() != expectedStatus) {
+            throw new InvalidBookingException(
+                "Cette action nécessite une réservation " + expectedStatus
+                    + " (statut actuel : " + booking.getStatus() + ")");
+        }
+        return booking;
+    }
+
+    private void releaseSlot(Booking booking) {
         TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId())
                 .orElseThrow(() -> new TimeSlotNotFoundException(
                     "Créneau introuvable pour cette réservation : id=" + booking.getTimeSlotId()));
         slot.setStatus(SlotStatus.AVAILABLE);
         slot.setBookingId(null);
         timeSlotRepository.save(slot);
-
-        log.info("Réservation refusée : bookingId={}, lawyerId={}, timeSlotId={} libéré",
-                bookingId, lawyerId, slot.getId());
-        return BookingResponse.from(savedBooking);
     }
 
-    private Booking getPendingBookingOrThrow(Long bookingId) {
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new BookingNotFoundException(
-                    "Réservation introuvable : id=" + bookingId));
+    private void validateCancellationDeadline(TimeSlot slot) {
+        LocalDateTime slotStart = LocalDateTime.of(slot.getDate(), slot.getStartTime());
+        LocalDateTime deadline = slotStart.minusHours(CANCELLATION_DEADLINE_HOURS);
 
-        if (booking.getStatus() != BookingStatus.PENDING) {
+        if (LocalDateTime.now().isAfter(deadline)) {
             throw new InvalidBookingException(
-                "Seule une réservation PENDING peut être confirmée ou refusée (statut actuel : "
-                    + booking.getStatus() + ")");
+                "Annulation impossible : le rendez-vous a lieu le "
+                    + slotStart.format(DEADLINE_FORMATTER)
+                    + ", soit dans moins de " + CANCELLATION_DEADLINE_HOURS
+                    + "h. Contactez directement l'autre partie pour convenir d'une solution.");
         }
-        return booking;
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Helpers privés
-    // ══════════════════════════════════════════════════════════
     private void validateSlotIsBookable(TimeSlot slot) {
         if (slot.getStatus() == SlotStatus.BOOKED) {
             throw new BookingConflictException("Ce créneau est déjà réservé");

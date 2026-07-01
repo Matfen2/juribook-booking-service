@@ -1,6 +1,6 @@
 # juribook-booking-service
 
-Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients avec protection contre la double réservation.
+Microservice de gestion des disponibilités, créneaux et réservations pour **JuriBook** : déclaration des disponibilités récurrentes par les avocats, génération automatique des créneaux concrets, gestion ponctuelle (ajout, blocage de période, déblocage), consultation publique des créneaux libres, réservation par les clients avec protection contre la double réservation, confirmation/refus par les avocats, et annulation encadrée par une règle des 24h.
 
 ## Stack
 
@@ -21,7 +21,7 @@ src/main/java/juribook/booking_service/
 ├── controller/
 │   ├── AvailabilityController.java       # POST/GET/DELETE /api/lawyers/{id}/availabilities
 │   ├── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
-│   └── BookingController.java            # POST /api/bookings
+│   └── BookingController.java            # POST /api/bookings + PATCH confirm/reject/cancel
 ├── dto/
 │   ├── request/
 │   │   ├── CreateAvailabilityRequest.java
@@ -40,22 +40,24 @@ src/main/java/juribook/booking_service/
 │   ├── Booking.java                      # Réservation d'un créneau par un client
 │   └── BookingStatus.java                # PENDING | CONFIRMED | COMPLETED | CANCELLED
 ├── exception/
-│   ├── GlobalExceptionHandler.java       # Handlers 400/404/409/500
+│   ├── GlobalExceptionHandler.java       # Handlers 400/403/404/409/500
 │   ├── InvalidAvailabilityException.java
 │   ├── AvailabilityNotFoundException.java
 │   ├── InvalidTimeSlotException.java
 │   ├── TimeSlotNotFoundException.java
-│   └── BookingConflictException.java     # 409 — créneau déjà réservé (Sprint 4.3)
+│   ├── BookingConflictException.java     # 409 — créneau déjà réservé
+│   ├── BookingNotFoundException.java     # 404 — réservation introuvable
+│   └── InvalidBookingException.java      # 400 — transition de statut Booking invalide
 ├── filter/
 │   └── JwtAuthenticationFilter.java      # Filtre Spring Security (OncePerRequestFilter)
 ├── repository/
 │   ├── AvailabilityRepository.java
-│   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate (verrou pessimiste, Sprint 4.3)
+│   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate
 │   └── BookingRepository.java
 └── service/
     ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
     ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
-    ├── BookingService.java               # Réservation, marquage BOOKED, protection anti-concurrence
+    ├── BookingService.java               # Réservation, confirmation/refus, annulation (règle 24h)
     └── JwtService.java                   # Validation des tokens JWT (lecture seule)
 src/main/resources/
 ├── application.yaml
@@ -98,7 +100,7 @@ docker compose up -d postgres-booking booking-service
 | Méthode | URL | Description |
 |---|---|---|
 | `GET` | `/api/lawyers/{lawyerId}/availabilities` | Liste des disponibilités récurrentes d'un avocat (actives et inactives) |
-| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux — deux modes, voir ci-dessous |
+| `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux : deux modes, voir ci-dessous |
 
 ### Protégés LAWYER (token JWT requis, rôle LAWYER)
 
@@ -110,12 +112,20 @@ docker compose up -d postgres-booking booking-service
 | `DELETE` | `/api/lawyers/{lawyerId}/slots/{id}` | Supprimer un créneau (refusé si BOOKED ou COMPLETED) |
 | `POST` | `/api/lawyers/{lawyerId}/slots/block` | Bloquer une période (congés, indisponibilité) |
 | `POST` | `/api/lawyers/{lawyerId}/slots/{id}/unblock` | Débloquer un créneau |
+| `PATCH` | `/api/bookings/{id}/confirm` | Confirmer une demande de réservation PENDING |
+| `PATCH` | `/api/bookings/{id}/reject` | Refuser une demande de réservation PENDING (créneau libéré) |
 
 ### Protégés CLIENT (token JWT requis, rôle CLIENT)
 
 | Méthode | URL | Description |
 |---|---|---|
-| `POST` | `/api/bookings` | Réserver un créneau — crée une réservation PENDING, marque le créneau BOOKED, protégé contre la double réservation (409) |
+| `POST` | `/api/bookings` | Réserver un créneau, crée une réservation PENDING, marque le créneau BOOKED, protégé contre la double réservation (409) |
+
+### Protégés CLIENT ou LAWYER (token JWT requis)
+
+| Méthode | URL | Description |
+|---|---|---|
+| `PATCH` | `/api/bookings/{id}/cancel` | Annuler une réservation CONFIRMED, refusé si moins de 24h avant le rendez-vous |
 
 ---
 
@@ -163,7 +173,7 @@ GET http://localhost:8083/api/lawyers/1/availabilities
 ```
 GET http://localhost:8083/api/lawyers/1/slots?date=2026-07-06
 ```
-Mode `date` : retourne uniquement les créneaux **AVAILABLE** de ce jour précis — usage typique côté client cherchant un rendez-vous.
+Mode `date` : retourne uniquement les créneaux **AVAILABLE** de ce jour précis, usage typique côté client cherchant un rendez-vous.
 
 ---
 
@@ -269,7 +279,7 @@ Réponse - 201. Le `clientId` n'est jamais pris dans le body, il est extrait du 
 
 ---
 
-### Réserver un créneau déjà pris (Sprint 4.3)
+### Réserver un créneau déjà pris
 ```json
 POST http://localhost:8083/api/bookings
 Authorization: Bearer <token_jwt_client>
@@ -290,6 +300,47 @@ Garanti même en cas de requêtes simultanées sur le même créneau, voir [Prot
 
 ---
 
+### Confirmer une réservation (avocat)
+```
+PATCH http://localhost:8083/api/bookings/1/confirm
+Authorization: Bearer <token_jwt_avocat>
+```
+Réponse - 200, le `Booking` passe en **CONFIRMED**. Le créneau reste **BOOKED** (aucun changement). Refusé (400) si la réservation n'est pas en statut **PENDING**.
+
+---
+
+### Refuser une réservation (avocat)
+```
+PATCH http://localhost:8083/api/bookings/2/reject
+Authorization: Bearer <token_jwt_avocat>
+```
+Réponse - 200, le `Booking` passe en **CANCELLED** et le créneau associé est immédiatement libéré (retour à **AVAILABLE**). Refusé (400) si la réservation n'est pas en statut **PENDING**. Pas de règle des 24h : rien n'a encore été confirmé.
+
+---
+
+### Annuler une réservation confirmée (client ou avocat)
+```
+PATCH http://localhost:8083/api/bookings/1/cancel
+Authorization: Bearer <token_jwt_client_ou_avocat>
+```
+Réponse - 200 si le rendez-vous a lieu dans **plus de 24h**. Le `Booking` passe en **CANCELLED**, le créneau repasse en **AVAILABLE**. Réservé aux réservations **CONFIRMED** (un `PENDING` passe par `/confirm` ou `/reject`).
+
+Refusé - **400** si moins de 24h avant le rendez-vous :
+```json
+{
+    "message": "Annulation impossible : le rendez-vous a lieu le 01/07/2026 à 23:00, soit dans moins de 24h. Contactez directement l'autre partie pour convenir d'une solution."
+}
+```
+
+Refusé - **403** si un client tente d'annuler la réservation d'un autre client :
+```json
+{
+    "message": "Cette réservation n'appartient pas à ce client"
+}
+```
+
+---
+
 ### Cas d'erreur
 
 ```
@@ -305,6 +356,11 @@ POST /bookings sur un créneau déjà BOOKED                  → 409 "Ce créne
 POST /bookings sur un créneau BLOCKED/CANCELLED/COMPLETED   → 400 "Ce créneau n'est plus disponible à la réservation"
 POST /bookings sur un créneau déjà passé                   → 400 "Impossible de réserver un créneau déjà passé"
 POST /bookings sans reason                                  → 400 "Le motif de consultation est obligatoire"
+PATCH /bookings/{id}/confirm ou /reject sur bookingId inconnu → 404 "Réservation introuvable : id=..."
+PATCH /bookings/{id}/confirm ou /reject si pas PENDING      → 400 "Cette action nécessite une réservation PENDING (statut actuel : ...)"
+PATCH /bookings/{id}/cancel si pas CONFIRMED                → 400 "Cette action nécessite une réservation CONFIRMED (statut actuel : ...)"
+PATCH /bookings/{id}/cancel à moins de 24h du rendez-vous    → 400 "Annulation impossible : le rendez-vous a lieu le ..., soit dans moins de 24h. ..."
+PATCH /bookings/{id}/cancel par un client non propriétaire   → 403 "Cette réservation n'appartient pas à ce client"
 Toute route LAWYER sans token                               → 401 Unauthorized
 Toute route LAWYER avec token CLIENT                         → 403 Forbidden
 Toute route CLIENT avec token LAWYER                          → 403 Forbidden
@@ -342,6 +398,12 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ```bash
 docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT id, lawyer_id, time_slot_id, status, reason, created_at FROM bookings WHERE client_id = 1 ORDER BY created_at DESC;"
+```
+
+### Compter les réservations par statut
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT status, COUNT(*) FROM bookings GROUP BY status;"
 ```
 
 ### Vérifier la cohérence créneau / réservation
@@ -395,7 +457,7 @@ Pas de FK JPA entre ces entités :
 - `TimeSlot.availabilityId` est une colonne de corrélation nullable (nullable car un créneau peut être créé ponctuellement, hors récurrence). Cela permet de désactiver ou modifier une `Availability` sans contrainte de suppression en cascade sur des créneaux déjà réservés ou passés.
 - `Booking.timeSlotId` et `TimeSlot.bookingId` (référence croisée) sont également sans FK stricte, pour le même principe de découplage et d'évolution indépendante des deux entités.
 
-`lawyerId` (sur les trois entités) et `clientId` (sur `Booking`) référencent respectivement l'entité `Lawyer` du `lawyer-service` et l'entité `User` de l'`auth-service` par leur id technique — pas de jointure inter-services, pas de FK en base, simples colonnes de corrélation (principe microservices : *database per service*).
+`lawyerId` (sur les trois entités) et `clientId` (sur `Booking`) référencent respectivement l'entité `Lawyer` du `lawyer-service` et l'entité `User` de l'`auth-service` par leur id technique, pas de jointure inter-services, pas de FK en base, simples colonnes de corrélation (principe microservices : *database per service*).
 
 ### Cycle de vie d'un TimeSlot (SlotStatus)
 
@@ -408,15 +470,17 @@ CANCELLED  → AVAILABLE  (le créneau redevient réservable après annulation)
 BLOCKED    → AVAILABLE  (l'avocat débloque le créneau)
 ```
 
+En pratique, le refus (`/reject`) et l'annulation (`/cancel`) font passer le créneau **directement** de `BOOKED` à `AVAILABLE`, sans matérialiser l'état intermédiaire `CANCELLED` en base, rien ne consomme cet état transitoire pour l'instant (pas de topic Kafka branché). À revoir si un besoin d'audit ou un événement `slot.released` nécessite de distinguer les deux étapes.
+
 ### Cycle de vie d'un Booking (BookingStatus)
 
 ```
 PENDING    → CONFIRMED  (l'avocat accepte la demande)
-PENDING    → CANCELLED  (annulation avant confirmation)
-CONFIRMED  → CANCELLED  (annulation après confirmation, règle des 24h — Sprint 4.5)
+PENDING    → CANCELLED  (l'avocat refuse la demande, pas de règle des 24h)
+CONFIRMED  → CANCELLED  (annulation par le client ou l'avocat, règle des 24h)
 CONFIRMED  → COMPLETED  (rendez-vous honoré)
 ```
-Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` (Sprint 4.2) le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction.
+Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction.
 
 ### Génération des créneaux
 
@@ -426,7 +490,7 @@ La création d'une `Availability` déclenche **immédiatement** la génération 
 
 Aucune contrainte d'exclusion PostgreSQL n'est en place pour empêcher le chevauchement de créneaux, la vérification est faite **au niveau service** (`AvailabilityService` et `TimeSlotService`), avant tout insert. Une contrainte d'exclusion serait plus robuste mais plus complexe à mettre en place avec Flyway/Hibernate ; repoussée en V2 si besoin.
 
-### Protection anti-concurrence (Sprint 4.3)
+### Protection anti-concurrence
 
 La réservation (`BookingService.createBooking`) lit le `TimeSlot` via `TimeSlotRepository.findByIdForUpdate`, qui pose un verrou pessimiste en écriture (`SELECT ... FOR UPDATE`). Si deux clients réservent le même créneau au même instant :
 
@@ -435,11 +499,15 @@ La réservation (`BookingService.createBooking`) lit le `TimeSlot` via `TimeSlot
 
 En filet de sécurité supplémentaire (au cas où le verrou serait contourné, ex. accès direct en base), un index unique partiel (`V5__add_unique_active_booking_per_slot.sql`) empêche plus d'une réservation **active** (statut différent de `CANCELLED`) par créneau au niveau base de données. Une violation de cette contrainte est aussi convertie en 409.
 
+### Règle des 24h
+
+`BookingService.validateCancellationDeadline` compare `now()` à `(date + startTime du TimeSlot) - 24h`. Si l'instant présent dépasse cette limite, l'annulation est refusée avec un message explicite donnant la date/heure du rendez-vous. Cette règle ne s'applique qu'à `/cancel` (réservations `CONFIRMED`), `/reject` (réservations encore `PENDING`) n'y est pas soumis, puisque rien n'a été confirmé côté agenda de l'avocat.
+
 ---
 
 ## Kafka
 
-Désactivé en développement local (pas de broker disponible) via `spring.autoconfigure.exclude` dans `application.yaml`. À réactiver en production en supprimant l'exclusion et en passant `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` (cf. Docker Compose). Topics prévus côté booking-service (Sprint 4.6) : `booking-events` (création/confirmation/annulation), `slot-events` (libération de créneau pour la liste d'attente).
+Désactivé en développement local (pas de broker disponible) via `spring.autoconfigure.exclude` dans `application.yaml`. À réactiver en production en supprimant l'exclusion et en passant `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` (cf. Docker Compose). Topics prévus côté booking-service : `booking-events` (création/confirmation/refus/annulation), `slot-events` (libération de créneau pour la liste d'attente).
 
 ---
 
@@ -449,8 +517,8 @@ Le booking-service **ne génère pas** de JWT, il valide uniquement les tokens �
 
 Les claims extraits du token :
 - `sub` → email de l'utilisateur
-- `id` → authUserId (Long) - stocké dans `SecurityContext.principal`, utilisé directement comme `clientId` pour `POST /api/bookings`
-- `role` → LAWYER | CLIENT | ADMIN - utilisé pour les règles d'accès
+- `id` → authUserId (Long) - stocké dans `SecurityContext.principal`, utilisé directement comme `clientId` pour `POST /api/bookings` et comme `actorId` pour `PATCH /api/bookings/{id}/cancel`
+- `role` → LAWYER | CLIENT | ADMIN - utilisé pour les règles d'accès et, pour `/cancel`, pour déterminer si la vérification d'appartenance côté client s'applique
 
 ---
 
@@ -458,3 +526,4 @@ Les claims extraits du token :
 
 - **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController` et `TimeSlotController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). À corriger avant la mise en production.
 - **Créneaux passés du jour même non filtrés à l'affichage** : `GET /slots?date=...` filtre par jour (`AVAILABLE` uniquement) mais ne tient pas compte de l'heure. Un créneau du jour déjà passé dans la journée peut donc encore apparaître dans la réponse, alors qu'il n'est plus réservable (`TimeSlot.isBookable()` existe mais n'est pas encore branché sur `TimeSlotService.getSlots()`).
+- **Aucune vérification d'appartenance côté avocat sur `confirm`/`reject`/`cancel`** : même limitation de fond que ci-dessus (pas de résolution `authUserId → lawyerId` sans appel au `lawyer-service`), mais plus sensible ici, n'importe quel compte `LAWYER` peut confirmer, refuser ou annuler la réservation d'un **autre** avocat. Côté client, la vérification est en revanche active sur `/cancel` (`Booking.clientId` = `authUserId` directement, pas d'appel inter-services nécessaire) : un client ne peut annuler que ses propres réservations (403 sinon). À corriger côté avocat avant la mise en production.

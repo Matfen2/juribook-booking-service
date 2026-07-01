@@ -2,6 +2,7 @@ package juribook.booking_service.exception;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -15,8 +16,9 @@ import java.util.Map;
  *
  * Codes HTTP retournés :
  *   400 → validation des champs (@Valid), disponibilité/créneau invalide, ou transition de statut Booking invalide
+ *   403 → réservation n'appartenant pas à l'appelant
  *   404 → disponibilité, créneau ou réservation introuvable
- *   409 → créneau déjà réservé
+ *   409 → créneau déjà réservé (double réservation)
  *   500 → erreur inattendue
  */
 @RestControllerAdvice
@@ -65,7 +67,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of("message", ex.getMessage()));
     }
 
-    // ── Sprint 4.3 - double réservation ──────────────────────
+    // ── Double réservation ──────────────────────
     @ExceptionHandler(BookingConflictException.class)
     public ResponseEntity<Map<String, String>> handleBookingConflict(
             BookingConflictException ex) {
@@ -73,7 +75,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of("message", ex.getMessage()));
     }
 
-    // ── Sprint 4.4 - confirmation / refus ─────────────────────
+    // ── Confirmation / refus ─────────────────────
     @ExceptionHandler(BookingNotFoundException.class)
     public ResponseEntity<Map<String, String>> handleBookingNotFound(
             BookingNotFoundException ex) {
@@ -85,6 +87,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleInvalidBooking(
             InvalidBookingException ex) {
         return ResponseEntity.badRequest()
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    // ── Annulation, appartenance de la réservation ──
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, String>> handleAccessDenied(
+            AccessDeniedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(Map.of("message", ex.getMessage()));
     }
 

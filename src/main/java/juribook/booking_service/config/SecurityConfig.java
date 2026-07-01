@@ -34,9 +34,10 @@ import java.util.List;
  *   DELETE /api/lawyers/{lawyerId}/slots/{id}              → LAWYER (supprimer)
  *   POST   /api/lawyers/{lawyerId}/slots/block             → LAWYER (bloquer une période)
  *   POST   /api/lawyers/{lawyerId}/slots/{id}/unblock      → LAWYER (débloquer)
- *   POST   /api/bookings                                   → CLIENT
- *   PATCH  /api/bookings/{id}/confirm                      → LAWYER
- *   PATCH  /api/bookings/{id}/reject                       → LAWYER
+ *   POST   /api/bookings                                   → CLIENT (réserver — Sprint 4.2)
+ *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer — Sprint 4.4)
+ *   PATCH  /api/bookings/{id}/reject                       → LAWYER (refuser — Sprint 4.4)
+ *   PATCH  /api/bookings/{id}/cancel                       → CLIENT ou LAWYER (annuler, règle 24h — Sprint 4.5)
  *   GET    /actuator/health, /swagger-ui/**                → public
  */
 @Configuration
@@ -60,19 +61,21 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.GET, "/api/lawyers/*/slots").permitAll()
                     .requestMatchers("/actuator/health").permitAll()
                     .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                    // ── Routes LAWYER — disponibilités récurrentes
+                    // ── Routes LAWYER - disponibilités récurrentes
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/availabilities").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/availabilities/*").hasRole("LAWYER")
-                    // ── Routes LAWYER — créneaux ponctuels et congés (Sprint 3.3)
+                    // ── Routes LAWYER - créneaux ponctuels et congés
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/slots/*").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/block").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
-                    // ── Routes CLIENT — réservation
+                    // ── Routes CLIENT - réservation 
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
-                    // ── Routes LAWYER — confirmation/refus (Sprint 4.4)
+                    // ── Routes LAWYER - confirmation/refus
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/confirm").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/reject").hasRole("LAWYER")
+                    // ── Route CLIENT ou LAWYER - annulation
+                    .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/cancel").hasAnyRole("CLIENT", "LAWYER")
                     // ── Tout le reste → authentification requise
                     .anyRequest().authenticated()
                 )
