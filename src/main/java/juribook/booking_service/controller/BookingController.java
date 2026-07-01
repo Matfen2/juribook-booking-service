@@ -12,26 +12,30 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Controller REST pour la réservation de créneaux par les clients.
+ * Controller REST pour la réservation de créneaux et leur traitement.
  *
- * Route :
- *   POST /api/bookings → CLIENT (réserver un créneau)
+ * Routes :
+ *   POST  /api/bookings              → CLIENT (réserver un créneau)
+ *   PATCH /api/bookings/{id}/confirm → LAWYER  (accepter une demande PENDING)
+ *   PATCH /api/bookings/{id}/reject  → LAWYER  (refuser une demande PENDING)
  *
- * Le clientId n'est jamais pris dans le corps de la requête : il est
- * extrait du JWT (claim "id", placé en principal par JwtAuthenticationFilter)
- * via l'objet Authentication, un client ne peut donc réserver que pour
- * lui-même.
+ * Le clientId (pour la réservation) et le lawyerId (pour confirm/reject,
+ * utilisé uniquement pour le log, cf. limite connue dans BookingService)
+ * ne sont jamais pris dans le corps de la requête : ils sont extraits du
+ * JWT (claim "id", placé en principal par JwtAuthenticationFilter).
  */
 @RestController
 @RequestMapping("/api/bookings")
 @RequiredArgsConstructor
-@Tag(name = "Réservations", description = "Réservation de créneaux par les clients")
+@Tag(name = "Réservations", description = "Réservation de créneaux par les clients, confirmation/refus par les avocats")
 public class BookingController {
 
     private final BookingService bookingService;
@@ -65,5 +69,47 @@ public class BookingController {
         Long clientId = (Long) authentication.getPrincipal();
         BookingResponse response = bookingService.createBooking(clientId, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    // ── PATCH /api/bookings/{id}/confirm ──────────────────────
+    @PatchMapping("/{id}/confirm")
+    @Operation(
+        summary = "Confirmer une réservation",
+        description = "L'avocat accepte une demande PENDING. Le créneau reste BOOKED."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Réservation confirmée"),
+        @ApiResponse(responseCode = "400", description = "La réservation n'est pas en statut PENDING"),
+        @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
+        @ApiResponse(responseCode = "403", description = "Rôle insuffisant (LAWYER requis)"),
+        @ApiResponse(responseCode = "404", description = "Réservation introuvable")
+    })
+    public ResponseEntity<BookingResponse> confirmBooking(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        Long lawyerAuthUserId = (Long) authentication.getPrincipal();
+        return ResponseEntity.ok(bookingService.confirmBooking(lawyerAuthUserId, id));
+    }
+
+    // ── PATCH /api/bookings/{id}/reject ───────────────────────
+    @PatchMapping("/{id}/reject")
+    @Operation(
+        summary = "Refuser une réservation",
+        description = "L'avocat refuse une demande PENDING. Le créneau est immédiatement libéré (AVAILABLE)."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Réservation refusée, créneau libéré"),
+        @ApiResponse(responseCode = "400", description = "La réservation n'est pas en statut PENDING"),
+        @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
+        @ApiResponse(responseCode = "403", description = "Rôle insuffisant (LAWYER requis)"),
+        @ApiResponse(responseCode = "404", description = "Réservation introuvable")
+    })
+    public ResponseEntity<BookingResponse> rejectBooking(
+            @PathVariable Long id,
+            Authentication authentication) {
+
+        Long lawyerAuthUserId = (Long) authentication.getPrincipal();
+        return ResponseEntity.ok(bookingService.rejectBooking(lawyerAuthUserId, id));
     }
 }

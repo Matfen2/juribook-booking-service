@@ -7,6 +7,8 @@ import juribook.booking_service.entity.BookingStatus;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
 import juribook.booking_service.exception.BookingConflictException;
+import juribook.booking_service.exception.BookingNotFoundException;
+import juribook.booking_service.exception.InvalidBookingException;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
 import juribook.booking_service.repository.BookingRepository;
@@ -18,20 +20,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Service métier pour la réservation de créneaux par les clients
- * (Sprint 4.2 + 4.3 : double réservation).
- *
- * Protection de la concurrence (Sprint 4.3) : le créneau est lu avec un
- * verrou pessimiste (SELECT ... FOR UPDATE via TimeSlotRepository.findByIdForUpdate).
- * Si deux clients réservent le même créneau au même instant, la seconde
- * transaction attend la fin de la première (commit), puis relit le statut
- * à jour — elle voit BOOKED et se fait rejeter avec un 409 Conflict, au
- * lieu de passer en double comme c'était possible avant ce sprint.
- *
- * Filet de sécurité supplémentaire en base (V5__add_unique_active_booking_per_slot.sql) :
- * un index unique partiel empêche plus d'une réservation active (statut
- * différent de CANCELLED) par créneau, au cas où le verrou applicatif
- * serait contourné.
+ * Service métier pour la réservation de créneaux par les clients et leur
+ * traitement par les avocats.
  */
 @Service
 @RequiredArgsConstructor
@@ -41,6 +31,9 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final TimeSlotRepository timeSlotRepository;
 
+    // ══════════════════════════════════════════════════════════
+    //  Réservation par le client
+    // ══════════════════════════════════════════════════════════
     @Transactional
     public BookingResponse createBooking(Long clientId, CreateBookingRequest request) {
         TimeSlot slot = timeSlotRepository.findByIdForUpdate(request.getTimeSlotId())
@@ -77,6 +70,65 @@ public class BookingService {
         return BookingResponse.from(saved);
     }
 
+    // ══════════════════════════════════════════════════════════
+    //  Confirmation / refus par l'avocat
+    // ══════════════════════════════════════════════════════════
+    /**
+     * L'avocat confirme une demande de réservation en attente.
+     * Le créneau reste BOOKED (aucun changement côté TimeSlot).
+     */
+    @Transactional
+    public BookingResponse confirmBooking(Long lawyerId, Long bookingId) {
+        Booking booking = getPendingBookingOrThrow(bookingId);
+
+        booking.setStatus(BookingStatus.CONFIRMED);
+        Booking saved = bookingRepository.save(booking);
+
+        log.info("Réservation confirmée : bookingId={}, lawyerId={}", bookingId, lawyerId);
+        return BookingResponse.from(saved);
+    }
+
+    /**
+     * L'avocat refuse une demande de réservation en attente.
+     * Le Booking passe en CANCELLED et le créneau est immédiatement
+     * libéré (retour à AVAILABLE) pour redevenir réservable par un
+     * autre client.
+     */
+    @Transactional
+    public BookingResponse rejectBooking(Long lawyerId, Long bookingId) {
+        Booking booking = getPendingBookingOrThrow(bookingId);
+
+        booking.setStatus(BookingStatus.CANCELLED);
+        Booking savedBooking = bookingRepository.save(booking);
+
+        TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId())
+                .orElseThrow(() -> new TimeSlotNotFoundException(
+                    "Créneau introuvable pour cette réservation : id=" + booking.getTimeSlotId()));
+        slot.setStatus(SlotStatus.AVAILABLE);
+        slot.setBookingId(null);
+        timeSlotRepository.save(slot);
+
+        log.info("Réservation refusée : bookingId={}, lawyerId={}, timeSlotId={} libéré",
+                bookingId, lawyerId, slot.getId());
+        return BookingResponse.from(savedBooking);
+    }
+
+    private Booking getPendingBookingOrThrow(Long bookingId) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException(
+                    "Réservation introuvable : id=" + bookingId));
+
+        if (booking.getStatus() != BookingStatus.PENDING) {
+            throw new InvalidBookingException(
+                "Seule une réservation PENDING peut être confirmée ou refusée (statut actuel : "
+                    + booking.getStatus() + ")");
+        }
+        return booking;
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Helpers privés
+    // ══════════════════════════════════════════════════════════
     private void validateSlotIsBookable(TimeSlot slot) {
         if (slot.getStatus() == SlotStatus.BOOKED) {
             throw new BookingConflictException("Ce créneau est déjà réservé");
