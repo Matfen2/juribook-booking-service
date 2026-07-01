@@ -18,7 +18,7 @@ import java.util.Map;
  *   400 → validation des champs (@Valid), disponibilité/créneau invalide, ou transition de statut Booking invalide
  *   403 → réservation n'appartenant pas à l'appelant
  *   404 → disponibilité, créneau ou réservation introuvable
- *   409 → créneau déjà réservé (double réservation)
+ *   409 → créneau déjà réservé ou déjà inscrit sur liste d'attente
  *   500 → erreur inattendue
  */
 @RestControllerAdvice
@@ -95,6 +95,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, String>> handleAccessDenied(
             AccessDeniedException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    // ── Liste d'attente ───────────────────────────
+    @ExceptionHandler(AlreadyOnWaitlistException.class)
+    public ResponseEntity<Map<String, String>> handleAlreadyOnWaitlist(
+            AlreadyOnWaitlistException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("message", ex.getMessage()));
     }
 

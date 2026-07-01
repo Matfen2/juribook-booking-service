@@ -20,7 +20,7 @@ import java.util.List;
 /**
  * Configuration Spring Security du booking-service.
  *
- * CORS intégré directement dans SecurityFilterChain via .cors(),
+ * CORS intégré directement dans SecurityFilterChain via .cors() —
  * pas de bean CorsFilter séparé. Un CorsFilter externe entre en
  * conflit avec SecurityFilterChain dans Spring Boot 4 et empêche
  * son chargement (leçon tirée du lawyer-service et de l'auth-service).
@@ -34,10 +34,11 @@ import java.util.List;
  *   DELETE /api/lawyers/{lawyerId}/slots/{id}              → LAWYER (supprimer)
  *   POST   /api/lawyers/{lawyerId}/slots/block             → LAWYER (bloquer une période)
  *   POST   /api/lawyers/{lawyerId}/slots/{id}/unblock      → LAWYER (débloquer)
- *   POST   /api/bookings                                   → CLIENT (réserver — Sprint 4.2)
- *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer — Sprint 4.4)
- *   PATCH  /api/bookings/{id}/reject                       → LAWYER (refuser — Sprint 4.4)
- *   PATCH  /api/bookings/{id}/cancel                       → CLIENT ou LAWYER (annuler, règle 24h — Sprint 4.5)
+ *   POST   /api/bookings                                   → CLIENT (réserver)
+ *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer)
+ *   PATCH  /api/bookings/{id}/reject                       → LAWYER (refuser)
+ *   PATCH  /api/bookings/{id}/cancel                       → CLIENT ou LAWYER (annuler, règle 24h)
+ *   POST   /api/waitlist/{lawyerId}                        → CLIENT (liste d'attente)
  *   GET    /actuator/health, /swagger-ui/**                → public
  */
 @Configuration
@@ -61,21 +62,23 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.GET, "/api/lawyers/*/slots").permitAll()
                     .requestMatchers("/actuator/health").permitAll()
                     .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                    // ── Routes LAWYER - disponibilités récurrentes
+                    // ── Routes LAWYER — disponibilités récurrentes
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/availabilities").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/availabilities/*").hasRole("LAWYER")
-                    // ── Routes LAWYER - créneaux ponctuels et congés
+                    // ── Routes LAWYER — créneaux ponctuels et congés
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.DELETE, "/api/lawyers/*/slots/*").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/block").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
-                    // ── Routes CLIENT - réservation 
+                    // ── Routes CLIENT — réservation
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
                     // ── Routes LAWYER - confirmation/refus
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/confirm").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/reject").hasRole("LAWYER")
                     // ── Route CLIENT ou LAWYER - annulation
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/cancel").hasAnyRole("CLIENT", "LAWYER")
+                    // ── Route CLIENT - liste d'attente
+                    .requestMatchers(HttpMethod.POST, "/api/waitlist/*").hasRole("CLIENT")
                     // ── Tout le reste → authentification requise
                     .anyRequest().authenticated()
                 )
