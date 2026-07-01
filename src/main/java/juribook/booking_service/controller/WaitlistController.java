@@ -10,16 +10,22 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * Controller REST pour la liste d'attente d'un avocat complet.
  *
- * Route :
+ * Routes :
  *   POST /api/waitlist/{lawyerId} → CLIENT (s'inscrire)
+ *   GET  /api/waitlist/{lawyerId} → public (consulter, utilisé en
+ *        interne par le notification-service, pour
+ *        résoudre les clients à notifier suite à un slot.released)
  *
  * Le clientId n'est jamais pris dans le corps de la requête : il est
  * extrait du JWT (claim "id", placé en principal par
@@ -52,5 +58,20 @@ public class WaitlistController {
         Long clientId = (Long) authentication.getPrincipal();
         WaitlistEntryResponse response = waitlistService.joinWaitlist(lawyerId, clientId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    // ── GET /api/waitlist/{lawyerId} ──────────────────────────
+    @GetMapping("/{lawyerId}")
+    @Operation(
+        summary = "Lister les clients en attente pour un avocat",
+        description = """
+            Accessible à tous — pas de JWT requis. Consommé principalement
+            par le notification-service pour résoudre les clients à
+            notifier quand un créneau se libère (Sprint 4.9).
+            """
+    )
+    @ApiResponse(responseCode = "200", description = "Liste des inscriptions, triée par ordre d'inscription")
+    public ResponseEntity<List<WaitlistEntryResponse>> getWaitlist(@PathVariable Long lawyerId) {
+        return ResponseEntity.ok(waitlistService.getWaitlist(lawyerId));
     }
 }

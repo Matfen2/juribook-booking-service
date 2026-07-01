@@ -10,16 +10,22 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 /**
- * Service métier pour la liste d'attente d'un avocat (Sprint 4.8).
+ * Service métier pour la liste d'attente d'un avocat (Sprint 4.8 + 4.9).
  *
  * ⚠️ Portée assumée pour ce sprint : l'inscription est acceptée sans
  * vérifier que l'avocat est effectivement "complet" (aucun créneau
- * AVAILABLE), contrairement à ce que suggère le titre de la user story.
- * Le seul garde-fou est anti-doublon (un client ne peut s'inscrire
- * qu'une fois par avocat). Si tu veux bloquer l'inscription quand des
- * créneaux sont encore disponibles, dis-le-moi, c'est un ajout simple
- * via TimeSlotRepository.findAvailableSlots(lawyerId, LocalDate.now()).
+ * AVAILABLE). Le seul garde-fou est anti-doublon (un client ne peut
+ * s'inscrire qu'une fois par avocat).
+ *
+ * getWaitlist est public (pas de JWT requis, cf. SecurityConfig) et
+ * utilisé par le notification-service pour résoudre la liste des
+ * clients à notifier quand un événement slot.released est reçu — le
+ * booking-service reste seul propriétaire des données de liste
+ * d'attente (database per service), le notification-service les
+ * consulte via cet endpoint plutôt que d'y accéder directement.
  */
 @Service
 @RequiredArgsConstructor
@@ -51,5 +57,12 @@ public class WaitlistService {
 
         log.info("Inscription liste d'attente : lawyerId={}, clientId={}", lawyerId, clientId);
         return WaitlistEntryResponse.from(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public List<WaitlistEntryResponse> getWaitlist(Long lawyerId) {
+        return waitlistRepository.findByLawyerIdOrderByCreatedAtAsc(lawyerId).stream()
+                .map(WaitlistEntryResponse::from)
+                .toList();
     }
 }
