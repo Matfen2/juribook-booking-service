@@ -6,6 +6,7 @@ import juribook.booking_service.entity.Booking;
 import juribook.booking_service.entity.BookingStatus;
 import juribook.booking_service.entity.SlotStatus;
 import juribook.booking_service.entity.TimeSlot;
+import juribook.booking_service.event.BookingEventPublisher;
 import juribook.booking_service.exception.BookingConflictException;
 import juribook.booking_service.exception.BookingNotFoundException;
 import juribook.booking_service.exception.InvalidBookingException;
@@ -25,7 +26,8 @@ import java.time.format.DateTimeFormatter;
 
 /**
  * Service métier pour la réservation de créneaux par les clients, leur
- * traitement par les avocats, et leur annulation.
+ * traitement par les avocats, leur annulation, et la publication des
+ * événements associés sur Kafka.
  *
  * ⚠️ Limite connue : confirmBooking, rejectBooking et
  * cancelBooking (côté avocat) ne vérifient PAS que le Booking appartient
@@ -48,6 +50,7 @@ public class BookingService {
 
     private final BookingRepository bookingRepository;
     private final TimeSlotRepository timeSlotRepository;
+    private final BookingEventPublisher eventPublisher;
 
     // ══════════════════════════════════════════════════════════
     //  Réservation par le client
@@ -85,6 +88,8 @@ public class BookingService {
         log.info("Réservation créée : bookingId={}, clientId={}, lawyerId={}, timeSlotId={}",
                 saved.getId(), clientId, slot.getLawyerId(), slot.getId());
 
+        eventPublisher.publishBookingCreated(saved);
+
         return BookingResponse.from(saved);
     }
 
@@ -103,6 +108,8 @@ public class BookingService {
         Booking saved = bookingRepository.save(booking);
 
         log.info("Réservation confirmée : bookingId={}, lawyerId={}", bookingId, lawyerId);
+        eventPublisher.publishBookingConfirmed(saved);
+
         return BookingResponse.from(saved);
     }
 
@@ -124,6 +131,8 @@ public class BookingService {
 
         log.info("Réservation refusée : bookingId={}, lawyerId={}, timeSlotId={} libéré",
                 bookingId, lawyerId, booking.getTimeSlotId());
+        eventPublisher.publishBookingCancelled(savedBooking);
+
         return BookingResponse.from(savedBooking);
     }
 
@@ -167,6 +176,8 @@ public class BookingService {
 
         log.info("Réservation annulée : bookingId={}, actorId={}, actorRole={}, timeSlotId={} libéré",
                 bookingId, actorId, actorRole, slot.getId());
+        eventPublisher.publishBookingCancelled(savedBooking);
+
         return BookingResponse.from(savedBooking);
     }
 
