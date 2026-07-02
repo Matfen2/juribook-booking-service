@@ -4,32 +4,39 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
 /**
- * Publication réelle des événements slot.released sur Kafka.
- *
- * Même conditionnement que KafkaBookingEventPublisher : actif seulement
- * si un KafkaTemplate existe en contexte (Kafka non exclu). Voir
- * NoOpSlotEventPublisher pour le repli en dev local.
+ * Publication des événements slot.released sur Kafka — implémentation
+ * unique, même correction que BookingEventPublisherImpl (Sprint 5.2) :
+ * décision à l'exécution via ObjectProvider<KafkaTemplate>, plus à
+ * l'enregistrement du bean via @ConditionalOnBean (cassé par l'ordre
+ * de scan des @Component vs autoconfiguration Spring Boot).
  */
 @Component
-@ConditionalOnBean(KafkaTemplate.class)
 @RequiredArgsConstructor
 @Slf4j
-public class KafkaSlotEventPublisher implements SlotEventPublisher {
+public class SlotEventPublisherImpl implements SlotEventPublisher {
 
     private static final String TOPIC = "slot-events";
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider;
     private final ObjectMapper objectMapper;
 
     @Override
     public void publishSlotReleased(Long lawyerId, Long slotId) {
+        KafkaTemplate<String, String> kafkaTemplate = kafkaTemplateProvider.getIfAvailable();
+
+        if (kafkaTemplate == null) {
+            log.debug("Kafka désactivé - événement slot.released non publié pour lawyerId={}, slotId={}",
+                    lawyerId, slotId);
+            return;
+        }
+
         SlotReleasedEvent event = new SlotReleasedEvent(
                 "slot.released", lawyerId, slotId, LocalDateTime.now());
 

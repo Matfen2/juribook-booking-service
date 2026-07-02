@@ -5,37 +5,43 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import juribook.booking_service.entity.Booking;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
 /**
- * Publication réelle des événements Booking sur Kafka.
+ * Publication des événements Booking sur Kafka — implémentation unique,
+ * qui décide À L'EXÉCUTION (pas à l'enregistrement du bean) si Kafka est
+ * disponible.
  *
- * N'est instancié que si un bean KafkaTemplate existe en contexte, c'est-
- * à-dire seulement quand Kafka est activé (spring.autoconfigure.exclude
- * ne l'exclut pas, typiquement en production, cf. README). En dev local
- * sans broker, c'est NoOpBookingEventPublisher qui prend le relais.
+ * Historique du bug corrigé ici (Sprint 5.2) : l'ancienne approche à
+ * deux classes (KafkaBookingEventPublisher avec @ConditionalOnBean(KafkaTemplate.class),
+ * NoOpBookingEventPublisher avec @ConditionalOnMissingBean) semblait
+ * raisonnable mais était cassée par un piège d'ordre classique de Spring
+ * Boot : ces deux classes sont de simples @Component, scannées AVANT que
+ * la plupart des autoconfigurations (dont KafkaAutoConfiguration) n'aient
+ * tourné. Résultat : au moment où @ConditionalOnBean(KafkaTemplate.class)
+ * était évalué, le KafkaTemplate n'existait pas encore dans le contexte
+ * → la condition échouait systématiquement → NoOp gagnait toujours, même
+ * quand Kafka était parfaitement configuré et actif. Le KafkaTemplate
+ * finissait par être créé (par l'autoconfiguration, plus tard), mais
+ * plus rien ne l'utilisait.
  *
- * ⚠️ Simplification assumée pour ce sprint : la publication se fait de
- * façon synchrone, à l'intérieur de la même transaction @Transactional
- * que l'écriture en base (pas de pattern Outbox). En cas d'échec Kafka,
- * l'erreur est logguée mais n'annule pas la transaction métier — on
- * privilégie la disponibilité du service de réservation à la garantie de
- * livraison de l'événement. À revoir si un besoin de fiabilité stricte
- * apparaît (Sprint 5.1 : configuration complète des topics).
+ * ObjectProvider<KafkaTemplate> contourne ce piège : sa résolution est
+ * paresseuse, appelée à chaque publication plutôt qu'une seule fois à
+ * l'enregistrement du bean, donc elle voit l'état final et complet du
+ * contexte Spring, une fois toutes les autoconfigurations terminées.
  */
 @Component
-@ConditionalOnBean(KafkaTemplate.class)
 @RequiredArgsConstructor
 @Slf4j
-public class KafkaBookingEventPublisher implements BookingEventPublisher {
+public class BookingEventPublisherImpl implements BookingEventPublisher {
 
     private static final String TOPIC = "booking-events";
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectProvider<KafkaTemplate<String, String>> kafkaTemplateProvider;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -54,6 +60,15 @@ public class KafkaBookingEventPublisher implements BookingEventPublisher {
     }
 
     private void publish(String eventType, Booking booking) {
+        KafkaTemplate<String, String> kafkaTemplate = kafkaTemplateProvider.getIfAvailable();
+
+        if (kafkaTemplate == null) {
+            // Kafka désactivé (dev local sans broker, cf. application.yaml)
+            log.debug("Kafka désactivé - événement {} non publié pour bookingId={}",
+                    eventType, booking.getId());
+            return;
+        }
+
         BookingEvent event = new BookingEvent(
                 eventType,
                 booking.getId(),
