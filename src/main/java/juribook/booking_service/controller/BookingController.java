@@ -14,13 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
@@ -30,20 +24,13 @@ import java.util.List;
  * Routes :
  *   POST  /api/bookings              → CLIENT          (réserver un créneau)
  *   GET   /api/bookings              → CLIENT          (historique de ses réservations)
+ *   GET   /api/bookings/{id}         → public           (détail enrichi, résolution inter-services)
  *   PATCH /api/bookings/{id}/confirm → LAWYER           (accepter une demande PENDING)
  *   PATCH /api/bookings/{id}/reject  → LAWYER           (refuser une demande PENDING)
  *   PATCH /api/bookings/{id}/cancel  → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
  *
- * Le tableau de bord avocat (GET /api/lawyers/{lawyerId}/bookings)
- * est exposé par LawyerBookingsController, pas ici : @RequestMapping de
- * classe empêcherait de monter un préfixe /api/lawyers/... différent
- * dans ce controller-ci, et ça reste cohérent avec le regroupement déjà
- * utilisé par AvailabilityController/TimeSlotController.
- *
- * L'identité de l'appelant (clientId, ou actorId + actorRole pour
- * confirm/reject/cancel) n'est jamais prise dans le corps de la requête :
- * elle est extraite du JWT (claims "id" et "role", placés en principal
- * et en authority par JwtAuthenticationFilter).
+ * Le tableau de bord avocat (GET /api/lawyers/{lawyerId}/bookings) est
+ * exposé par LawyerBookingsController, pas ici.
  */
 @RestController
 @RequestMapping("/api/bookings")
@@ -55,25 +42,14 @@ public class BookingController {
 
     // ── POST /api/bookings ────────────────────────────────────
     @PostMapping
-    @Operation(
-        summary = "Réserver un créneau",
-        description = """
-            Crée une réservation en statut PENDING (en attente de réponse de
-            l'avocat) et marque immédiatement le créneau comme BOOKED, pour
-            qu'il ne soit plus proposé à d'autres clients.
-
-            Protégé contre la double réservation : si deux
-            clients réservent le même créneau au même instant, un seul
-            obtient le 201, l'autre reçoit un 409 Conflict.
-            """
-    )
+    @Operation(summary = "Réserver un créneau")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Réservation créée, créneau marqué BOOKED"),
-        @ApiResponse(responseCode = "400", description = "Données invalides ou créneau indisponible (bloqué, passé)"),
+        @ApiResponse(responseCode = "400", description = "Données invalides ou créneau indisponible"),
         @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
         @ApiResponse(responseCode = "403", description = "Rôle insuffisant (CLIENT requis)"),
         @ApiResponse(responseCode = "404", description = "Créneau introuvable"),
-        @ApiResponse(responseCode = "409", description = "Créneau déjà réservé (double réservation)")
+        @ApiResponse(responseCode = "409", description = "Créneau déjà réservé")
     })
     public ResponseEntity<BookingResponse> createBooking(
             Authentication authentication,
@@ -86,14 +62,7 @@ public class BookingController {
 
     // ── GET /api/bookings ──────────────────────────────────────
     @GetMapping
-    @Operation(
-        summary = "Historique de mes réservations",
-        description = """
-            Retourne toutes les réservations du client authentifié (tous
-            statuts confondus), enrichies de la date/heure du créneau,
-            triées du rendez-vous le plus récent au plus ancien.
-            """
-    )
+    @Operation(summary = "Historique de mes réservations")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Liste des réservations (peut être vide)"),
         @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
@@ -104,12 +73,28 @@ public class BookingController {
         return ResponseEntity.ok(bookingService.getMyBookings(clientId));
     }
 
+    // ── GET /api/bookings/{id} ─────────────────────────────────
+    @GetMapping("/{id}")
+    @Operation(
+        summary = "Détail enrichi d'une réservation",
+        description = """
+            Public — pas de JWT requis. Utilisé en interne par les autres
+            microservices pour résoudre la date/heure d'un rendez-vous à partir d'un bookingId reçu via
+            un événement Kafka (qui ne transporte que timeSlotId, pas la
+            date/heure résolue).
+            """
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Détail retourné"),
+        @ApiResponse(responseCode = "404", description = "Réservation introuvable")
+    })
+    public ResponseEntity<BookingHistoryResponse> getBookingDetails(@PathVariable Long id) {
+        return ResponseEntity.ok(bookingService.getBookingDetails(id));
+    }
+
     // ── PATCH /api/bookings/{id}/confirm ──────────────────────
     @PatchMapping("/{id}/confirm")
-    @Operation(
-        summary = "Confirmer une réservation",
-        description = "L'avocat accepte une demande PENDING. Le créneau reste BOOKED."
-    )
+    @Operation(summary = "Confirmer une réservation")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Réservation confirmée"),
         @ApiResponse(responseCode = "400", description = "La réservation n'est pas en statut PENDING"),
@@ -127,10 +112,7 @@ public class BookingController {
 
     // ── PATCH /api/bookings/{id}/reject ───────────────────────
     @PatchMapping("/{id}/reject")
-    @Operation(
-        summary = "Refuser une réservation",
-        description = "L'avocat refuse une demande PENDING. Le créneau est immédiatement libéré (AVAILABLE)."
-    )
+    @Operation(summary = "Refuser une réservation")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Réservation refusée, créneau libéré"),
         @ApiResponse(responseCode = "400", description = "La réservation n'est pas en statut PENDING"),
@@ -148,17 +130,10 @@ public class BookingController {
 
     // ── PATCH /api/bookings/{id}/cancel ───────────────────────
     @PatchMapping("/{id}/cancel")
-    @Operation(
-        summary = "Annuler une réservation confirmée",
-        description = """
-            Le client ou l'avocat annule une réservation CONFIRMED. Refusée
-            avec un message explicite si le rendez-vous a lieu dans moins
-            de 24h. Le créneau est immédiatement libéré (AVAILABLE).
-            """
-    )
+    @Operation(summary = "Annuler une réservation confirmée")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Réservation annulée, créneau libéré"),
-        @ApiResponse(responseCode = "400", description = "Statut invalide (pas CONFIRMED) ou moins de 24h avant le rendez-vous"),
+        @ApiResponse(responseCode = "400", description = "Statut invalide ou moins de 24h avant le rendez-vous"),
         @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
         @ApiResponse(responseCode = "403", description = "Cette réservation n'appartient pas à ce client"),
         @ApiResponse(responseCode = "404", description = "Réservation ou créneau introuvable")
@@ -172,7 +147,6 @@ public class BookingController {
         return ResponseEntity.ok(bookingService.cancelBooking(actorId, actorRole, id));
     }
 
-    // ── Helper ─────────────────────────────────────────────────
     private String extractRole(Authentication authentication) {
         return authentication.getAuthorities().stream()
                 .findFirst()

@@ -34,19 +34,16 @@ import java.util.stream.Collectors;
 /**
  * Service métier pour la réservation de créneaux par les clients, leur
  * traitement par les avocats, leur annulation, l'historique client, le
- * tableau de bord avocat, et la publication des événements associés sur
- * Kafka.
+ * tableau de bord avocat, la résolution inter-services d'une réservation,
+ * et la publication des événements associés sur Kafka.
  *
- * ⚠️ Limite connue : confirmBooking,
- * rejectBooking, cancelBooking (côté avocat) et getLawyerBookings ne
- * vérifient PAS que le Booking/lawyerId appartient bien à l'avocat
- * authentifié, même limitation que sur
- * AvailabilityController/TimeSlotController (pas de résolution
+ * ⚠️ Limite connue : confirmBooking, rejectBooking, cancelBooking (côté
+ * avocat) et getLawyerBookings ne vérifient PAS que le Booking/lawyerId
+ * appartient bien à l'avocat authentifié (pas de résolution
  * authUserId → lawyerId sans appel au lawyer-service). Côté client en
  * revanche, l'appartenance EST vérifiée pour cancelBooking et
  * getMyBookings, car Booking.clientId est directement l'authUserId
- * extrait du JWT (pas besoin d'appel inter-services). À corriger côté
- * avocat avant la mise en production.
+ * extrait du JWT.
  */
 @Service
 @RequiredArgsConstructor
@@ -84,9 +81,6 @@ public class BookingService {
         try {
             saved = bookingRepository.save(booking);
         } catch (DataIntegrityViolationException e) {
-            // Filet de sécurité si l'index unique partiel (V5) est déclenché
-            // malgré le verrou pessimiste, ne devrait normalement jamais
-            // arriver, mais protège contre un contournement du verrou.
             throw new BookingConflictException(
                 "Ce créneau vient d'être réservé par quelqu'un d'autre");
         }
@@ -106,10 +100,6 @@ public class BookingService {
     // ══════════════════════════════════════════════════════════
     //  Confirmation / refus par l'avocat
     // ══════════════════════════════════════════════════════════
-    /**
-     * L'avocat confirme une demande de réservation en attente.
-     * Le créneau reste BOOKED (aucun changement côté TimeSlot).
-     */
     @Transactional
     public BookingResponse confirmBooking(Long lawyerId, Long bookingId) {
         Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.PENDING);
@@ -123,13 +113,6 @@ public class BookingService {
         return BookingResponse.from(saved);
     }
 
-    /**
-     * L'avocat refuse une demande de réservation en attente.
-     * Le Booking passe en CANCELLED et le créneau est immédiatement
-     * libéré (retour à AVAILABLE) pour redevenir réservable par un
-     * autre client. Pas de règle des 24h ici : la demande n'a jamais
-     * été confirmée, rien n'a été engagé côté agenda de l'avocat.
-     */
     @Transactional
     public BookingResponse rejectBooking(Long lawyerId, Long bookingId) {
         Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.PENDING);
@@ -148,15 +131,8 @@ public class BookingService {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Annulation - client ou avocat, règle des 24h
+    //  Annulation — client ou avocat, règle des 24h
     // ══════════════════════════════════════════════════════════
-    /**
-     * Annule une réservation CONFIRMED, à la demande du client ou de
-     * l'avocat. Refusée si le rendez-vous a lieu dans moins de 24h.
-     *
-     * @param actorId   authUserId extrait du JWT de l'appelant
-     * @param actorRole "CLIENT" ou "LAWYER", extrait du rôle du JWT
-     */
     @Transactional
     public BookingResponse cancelBooking(Long actorId, String actorRole, Long bookingId) {
         Booking booking = getBookingInStatusOrThrow(bookingId, BookingStatus.CONFIRMED);
@@ -164,8 +140,7 @@ public class BookingService {
         if ("CLIENT".equals(actorRole) && !booking.getClientId().equals(actorId)) {
             throw new AccessDeniedException("Cette réservation n'appartient pas à ce client");
         }
-        // Côté LAWYER : pas de vérification d'appartenance possible sans
-        // appel au lawyer-service, cf. limite connue en tête de classe.
+
         TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId())
                 .orElseThrow(() -> new TimeSlotNotFoundException(
                     "Créneau introuvable pour cette réservation : id=" + booking.getTimeSlotId()));
@@ -188,36 +163,40 @@ public class BookingService {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Historique client
+    //  Historique client / Tableau de bord avocat
     // ══════════════════════════════════════════════════════════
     @Transactional(readOnly = true)
     public List<BookingHistoryResponse> getMyBookings(Long clientId) {
-        List<Booking> bookings = bookingRepository.findByClientId(clientId);
-        return enrichAndSort(bookings, true);
+        return enrichAndSort(bookingRepository.findByClientId(clientId), true);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Tableau de bord avocat
-    // ══════════════════════════════════════════════════════════
-    /**
-     * Toutes les réservations d'un avocat (tous statuts confondus),
-     * enrichies de la date/heure du créneau, triées du rendez-vous le
-     * plus proche au plus lointain (contrairement à l'historique client,
-     *  ici c'est une file à traiter, pas un journal, donc l'échéance la
-     * plus urgente doit remonter en premier).
-     */
     @Transactional(readOnly = true)
     public List<BookingHistoryResponse> getLawyerBookings(Long lawyerId) {
-        List<Booking> bookings = bookingRepository.findByLawyerId(lawyerId);
-        return enrichAndSort(bookings, false);
+        return enrichAndSort(bookingRepository.findByLawyerId(lawyerId), false);
     }
 
+    // ══════════════════════════════════════════════════════════
+    //  Résolution inter-services d'une réservation 
+    // ══════════════════════════════════════════════════════════
     /**
-     * Jointure applicative Booking + TimeSlot en une seule requête
-     * groupée (findAllById, pas de N+1), puis tri par date/heure de
-     * rendez-vous, décroissant pour un historique, croissant pour une
-     * file d'attente à traiter.
+     * Détail enrichi (date/heure du créneau) d'une réservation par id,
+     * indépendamment du client ou de l'avocat propriétaire.
+     *
+     * Endpoint public (cf. GlobalExceptionHandler/SecurityConfig),
+     * consommé par le notification-service pour composer l'email de
+     * confirmation, qui n'a que bookingId + lawyerId +
+     * clientId depuis l'événement Kafka, pas la date/heure du rendez-vous.
      */
+    @Transactional(readOnly = true)
+    public BookingHistoryResponse getBookingDetails(Long bookingId) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new BookingNotFoundException(
+                    "Réservation introuvable : id=" + bookingId));
+
+        TimeSlot slot = timeSlotRepository.findById(booking.getTimeSlotId()).orElse(null);
+        return BookingHistoryResponse.from(booking, slot);
+    }
+
     private List<BookingHistoryResponse> enrichAndSort(List<Booking> bookings, boolean mostRecentFirst) {
         if (bookings.isEmpty()) {
             return List.of();
