@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
  * choix déjà fait côté TimeSlot.bookingId : ça permet de faire évoluer les
  * deux entités indépendamment et d'éviter un couplage de suppression en
  * cascade. La cohérence (un seul Booking actif par créneau, transition de
- * statut du TimeSlot associé) est gérée au niveau service (Sprint 4.2+).
+ * statut du TimeSlot associé) est gérée au niveau service.
  */
 @Entity
 @Table(name = "bookings")
@@ -60,6 +60,12 @@ public class Booking {
     // (ex: "Litige avec mon employeur", "Rédaction de contrat")
     @Column(name = "reason", length = 500)
     private String reason;
+
+    // ── Rappel automatique ───────────────────────
+    // Évite que BookingReminderJob renvoie plusieurs fois le rappel 24h
+    // pour la même réservation entre deux exécutions du job planifié.
+    @Column(name = "reminder_sent", nullable = false)
+    private boolean reminderSent = false;
 
     // ── Audit ──────────────────────────────────────────────────
     @Column(name = "created_at", nullable = false, updatable = false)

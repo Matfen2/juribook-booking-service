@@ -17,11 +17,12 @@ Microservice de gestion des disponibilités, créneaux et réservations pour **J
 src/main/java/juribook/booking_service/
 ├── config/
 │   ├── SecurityConfig.java               # Règles d'accès par rôle + CORS + filtre JWT
-│   └── OpenApiConfig.java                # Configuration Swagger UI
+│   ├── OpenApiConfig.java                # Configuration Swagger UI
+│   └── SchedulingConfig.java             # Active @Scheduled, nécessaire à BookingReminderJob
 ├── controller/
 │   ├── AvailabilityController.java       # POST/GET/DELETE /api/lawyers/{id}/availabilities
 │   ├── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
-│   ├── BookingController.java            # POST/GET /api/bookings + PATCH confirm/reject/cancel
+│   ├── BookingController.java            # POST/GET /api/bookings + GET /{id} + PATCH confirm/reject/cancel
 │   ├── LawyerBookingsController.java     # GET /api/lawyers/{id}/bookings — tableau de bord avocat
 │   └── WaitlistController.java           # POST/GET /api/waitlist/{lawyerId}
 ├── dto/
@@ -41,18 +42,16 @@ src/main/java/juribook/booking_service/
 │   ├── Availability.java                 # Disponibilité récurrente hebdomadaire
 │   ├── TimeSlot.java                     # Créneau concret daté, réservable
 │   ├── SlotStatus.java                   # AVAILABLE | BOOKED | BLOCKED | CANCELLED | COMPLETED
-│   ├── Booking.java                      # Réservation d'un créneau par un client
+│   ├── Booking.java                      # Réservation d'un créneau par un client, inclut reminderSent
 │   ├── BookingStatus.java                # PENDING | CONFIRMED | COMPLETED | CANCELLED
 │   └── WaitlistEntry.java                # Inscription d'un client sur la liste d'attente d'un avocat
 ├── event/
-│   ├── BookingEventPublisher.java        # Interface - événements booking-events
-│   ├── BookingEvent.java                 # Payload JSON booking.created/confirmed/cancelled
-│   ├── KafkaBookingEventPublisher.java   # Impl réelle, active si KafkaTemplate en contexte
-│   ├── NoOpBookingEventPublisher.java    # Impl de repli, dev local sans broker
+│   ├── BookingEventPublisher.java        # Interface - booking.created/confirmed/cancelled/reminder
+│   ├── BookingEvent.java                 # Payload JSON booking-events
+│   ├── BookingEventPublisherImpl.java    # Impl unique, décide à l'exécution via ObjectProvider<KafkaTemplate>
 │   ├── SlotEventPublisher.java           # Interface - événements slot-events
 │   ├── SlotReleasedEvent.java            # Payload JSON slot.released (lawyerId + slotId)
-│   ├── KafkaSlotEventPublisher.java      # Impl réelle, active si KafkaTemplate en contexte
-│   └── NoOpSlotEventPublisher.java       # Impl de repli, dev local sans broker
+│   └── SlotEventPublisherImpl.java       # Impl unique, même pattern que BookingEventPublisherImpl
 ├── exception/
 │   ├── GlobalExceptionHandler.java       # Handlers 400/403/404/409/500
 │   ├── InvalidAvailabilityException.java
@@ -65,15 +64,17 @@ src/main/java/juribook/booking_service/
 │   └── AlreadyOnWaitlistException.java   # 409 - déjà inscrit sur cette liste d'attente
 ├── filter/
 │   └── JwtAuthenticationFilter.java      # Filtre Spring Security (OncePerRequestFilter)
+├── job/
+│   └── BookingReminderJob.java           # @Scheduled - rappel 24h avant le rendez-vous
 ├── repository/
 │   ├── AvailabilityRepository.java
 │   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate (verrou pessimiste)
-│   ├── BookingRepository.java            # Inclut findByClientId (historique) et findByLawyerId (tableau de bord)
+│   ├── BookingRepository.java            # Inclut findByClientId, findByLawyerId, findByStatusAndReminderSentFalse
 │   └── WaitlistRepository.java
 └── service/
     ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
     ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
-    ├── BookingService.java               # Réservation, confirmation/refus, annulation, historique, tableau de bord, événements
+    ├── BookingService.java               # Réservation, confirmation/refus, annulation, historique, tableau de bord, détail inter-services, événements
     ├── WaitlistService.java              # Inscription et consultation de la liste d'attente
     └── JwtService.java                   # Validation des tokens JWT (lecture seule)
 src/main/resources/
@@ -84,7 +85,8 @@ src/main/resources/
     ├── V3__add_block_reason_to_time_slots.sql
     ├── V4__create_bookings_table.sql
     ├── V5__add_unique_active_booking_per_slot.sql
-    └── V6__create_waitlist_entries_table.sql
+    ├── V6__create_waitlist_entries_table.sql
+    └── V7__add_reminder_sent_to_bookings.sql
 src/test/java/juribook/booking_service/
 ├── entity/
 │   └── TimeSlotTest.java                 # isBookable() - créneaux passés/futurs, statuts
@@ -135,6 +137,7 @@ mvn test
 | `GET` | `/api/lawyers/{lawyerId}/availabilities` | Liste des disponibilités récurrentes d'un avocat (actives et inactives) |
 | `GET` | `/api/lawyers/{lawyerId}/slots` | Consultation des créneaux, deux modes, voir ci-dessous |
 | `GET` | `/api/waitlist/{lawyerId}` | Liste des clients en attente pour un avocat (consommé par le notification-service) |
+| `GET` | `/api/bookings/{id}` | Détail enrichi d'une réservation par id (résolution inter-services, consommé par le notification-service pour composer ses emails) |
 
 ### Protégés LAWYER (token JWT requis, rôle LAWYER)
 
@@ -475,6 +478,27 @@ Réponse - 200, tous statuts confondus, triée du rendez-vous **le plus proche a
 
 ---
 
+### Consulter le détail enrichi d'une réservation (public — inter-services)
+```
+GET http://localhost:8083/api/bookings/2
+```
+Réponse - 200. Public, aucun token requis, utilisé par le `notification-service` pour résoudre date/heure/motif à partir d'un `bookingId` reçu via Kafka (l'événement ne transporte que `timeSlotId`, pas la date/heure déjà résolue) :
+```json
+{
+    "id": 2,
+    "lawyerId": 4,
+    "timeSlotId": 15,
+    "status": "CONFIRMED",
+    "reason": "Litige avec mon employeur",
+    "date": "2026-07-06",
+    "startTime": "09:00:00",
+    "endTime": "09:30:00",
+    "createdAt": "2026-07-01T..."
+}
+```
+
+---
+
 ### Cas d'erreur
 
 ```
@@ -490,6 +514,7 @@ POST /bookings sur un créneau déjà BOOKED                  → 409 "Ce créne
 POST /bookings sur un créneau BLOCKED/CANCELLED/COMPLETED   → 400 "Ce créneau n'est plus disponible à la réservation"
 POST /bookings sur un créneau déjà passé                   → 400 "Impossible de réserver un créneau déjà passé"
 POST /bookings sans reason                                  → 400 "Le motif de consultation est obligatoire"
+GET /bookings/{id} sur un bookingId inconnu                 → 404 "Réservation introuvable : id=..."
 PATCH /bookings/{id}/confirm ou /reject sur bookingId inconnu → 404 "Réservation introuvable : id=..."
 PATCH /bookings/{id}/confirm ou /reject si pas PENDING      → 400 "Cette action nécessite une réservation PENDING (statut actuel : ...)"
 PATCH /bookings/{id}/cancel si pas CONFIRMED                → 400 "Cette action nécessite une réservation CONFIRMED (statut actuel : ...)"
@@ -523,6 +548,12 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ```bash
 docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT id, date, start_time, end_time, status FROM time_slots WHERE lawyer_id = 1 ORDER BY date, start_time;"
+```
+
+### Vérifier les candidats au rappel 24h (Sprint 5.5)
+
+```bash
+docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELECT b.id, b.status, b.reminder_sent, t.date, t.start_time FROM bookings b JOIN time_slots t ON t.id = b.time_slot_id WHERE b.status = 'CONFIRMED' AND b.reminder_sent = false ORDER BY t.date, t.start_time;"
 ```
 
 ### Compter les créneaux par statut
@@ -630,7 +661,7 @@ PENDING    → CANCELLED  (l'avocat refuse la demande, pas de règle des 24h)
 CONFIRMED  → CANCELLED  (annulation par le client ou l'avocat, règle des 24h)
 CONFIRMED  → COMPLETED  (rendez-vous honoré - sprint à venir)
 ```
-Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` (Sprint 4.2) le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction. Chaque transition publie un événement Kafka correspondant — voir [Kafka](#kafka).
+Contrairement à `SlotStatus`, pas de transition retour : `CANCELLED` et `COMPLETED` sont terminaux. La création d'un `Booking` le place toujours en `PENDING` et fait passer le `TimeSlot` associé en `BOOKED` dans la même transaction. Chaque transition publie un événement Kafka correspondant — voir [Kafka](#kafka).
 
 ### Historique client vs tableau de bord avocat
 
@@ -667,31 +698,36 @@ En filet de sécurité supplémentaire (au cas où le verrou serait contourné, 
 
 ### Activation
 
-Contrôlée par `spring.autoconfigure.exclude` dans `application.yaml` :
-- **Dev local** (par défaut) : les deux lignes d'exclude sont actives → aucun `KafkaTemplate` n'est créé → les publishers `NoOp*` prennent le relais (logs en `DEBUG` uniquement, aucune connexion réseau tentée).
-- **Kafka actif** (test local avec broker, ou production) : commenter/supprimer les deux lignes d'exclude → Spring Boot autoconfigure normalement `KafkaTemplate` → les publishers `Kafka*` prennent le relais automatiquement, sans aucun autre changement de code.
+Une seule implémentation par interface (`BookingEventPublisherImpl`, `SlotEventPublisherImpl`), qui décide **à l'exécution**, pas à l'enregistrement du bean, si Kafka est disponible, via `ObjectProvider<KafkaTemplate<String, String>>` injecté et résolu paresseusement à chaque publication :
 
-```yaml
-autoconfigure:
-    exclude:
-      # - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
-      # - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
+```java
+KafkaTemplate<String, String> kafkaTemplate = kafkaTemplateProvider.getIfAvailable();
+if (kafkaTemplate == null) {
+    log.debug("Kafka désactivé - événement {} non publié pour bookingId={}", eventType, booking.getId());
+    return;
+}
 ```
 
-En production Docker, `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` est déjà positionné par `docker-compose.yml` (listener inter-conteneurs). En local avec le broker lancé via `docker compose up -d kafka`, la valeur par défaut `localhost:9092` (listener `PLAINTEXT_HOST` exposé sur l'hôte) convient sans rien changer.
+⚠️ **Historique** : l'ancienne approche à deux classes (`KafkaBookingEventPublisher` avec `@ConditionalOnBean(KafkaTemplate.class)`, `NoOpBookingEventPublisher` avec `@ConditionalOnMissingBean`) semblait raisonnable mais était cassée par un piège d'ordre classique de Spring Boot : ces deux classes étaient de simples `@Component`, scannées **avant** que la plupart des autoconfigurations (dont `KafkaAutoConfiguration`) n'aient tourné. Résultat en pratique : même avec Kafka pleinement actif et un `KafkaTemplate` bien créé, `NoOpBookingEventPublisher` gagnait systématiquement — la condition était évaluée trop tôt pour voir le `KafkaTemplate`, qui finissait par exister mais sans que rien ne l'utilise. `ObjectProvider` contourne ce piège car sa résolution est appelée à chaque publication, une fois toutes les autoconfigurations terminées (Sprint 5.2).
+
+En local sans broker, aucune connexion réseau n'est tentée. En production Docker, `SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092` est positionné par `docker-compose.yml`. En local avec le broker lancé via `docker compose up -d kafka`, la valeur par défaut `localhost:9092` convient sans rien changer.
+
+### Provisioning des topics
+
+Les 8 topics de la plateforme (`booking-events`, `slot-events`, `lawyer-events`, `review-events`, `audit-events`, `search-events`, `document-events`, `abuse-events`) sont provisionnés **centralement**, pas par ce service : un conteneur one-shot `kafka-init` (dépôt `juribook-docker`) les crée au démarrage de l'infra, avec 3 partitions et 7 jours de rétention pour les topics standards, rétention infinie pour `audit-events`. `KAFKA_AUTO_CREATE_TOPICS_ENABLE` est à `false`, un service qui publierait sur un topic non provisionné échouerait plutôt que de le créer silencieusement avec des valeurs par défaut.
 
 ### Topics et événements publiés
 
 | Topic | Producteur | Événements | Déclencheurs |
 |---|---|---|---|
-| `booking-events` | `BookingService` (ce dépôt) | `booking.created`, `booking.confirmed`, `booking.cancelled` | `POST /bookings`, `PATCH /confirm`, `PATCH /reject`, `PATCH /cancel` |
+| `booking-events` | `BookingService` (ce dépôt) | `booking.created`, `booking.confirmed`, `booking.cancelled`, `booking.reminder` | `POST /bookings`, `PATCH /confirm`, `PATCH /reject`, `PATCH /cancel`, `BookingReminderJob`|
 | `slot-events` | `BookingService` (ce dépôt) | `slot.released` | `PATCH /reject`, `PATCH /cancel` (le créneau redevient AVAILABLE) |
 
-`slot-events` est consommé par le **notification-service** (dépôt séparé, `juribook-notification-service`), sur réception de `slot.released`, il rappelle `GET /api/waitlist/{lawyerId}` sur ce service pour résoudre les clients à notifier. Le refus (`/reject`) d'une demande **PENDING** publie `booking.cancelled` (pas d'événement `booking.rejected` distinct : `BookingStatus` n'a que `PENDING` / `CONFIRMED` / `COMPLETED` / `CANCELLED`, cf. [Booking.java](#cycle-de-vie-dun-booking-bookingstatus)).
+`slot-events` est consommé par le **notification-service** (dépôt séparé, `juribook-notification-service`), sur réception de `slot.released`, il rappelle `GET /api/waitlist/{lawyerId}` sur ce service pour résoudre les clients à notifier. Le refus (`/reject`) d'une demande **PENDING** publie `booking.cancelled` (pas d'événement `booking.rejected` distinct : `BookingStatus` n'a que `PENDING` / `CONFIRMED` / `COMPLETED` / `CANCELLED`, cf. [Booking.java](#cycle-de-vie-dun-booking-bookingstatus)). `booking.reminder` (Sprint 5.5) n'est jamais déclenché par une action utilisateur, uniquement par `BookingReminderJob`, cf. [Job planifié](#job-planifié--rappel-24h-sprint-55).
 
 ### Format des payloads
 
-`booking-events` (`BookingEvent`) :
+`booking-events` (`BookingEvent`), même structure pour les 4 types d'événement, seul `eventType` change :
 ```json
 {
     "eventType": "booking.created",
@@ -724,10 +760,23 @@ docker exec -it juribook-kafka kafka-console-consumer --bootstrap-server localho
 docker exec -it juribook-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic slot-events --from-beginning
 ```
 
-### Limites assumées pour ce sprint
+### Limites assumées
 
 - **Publication synchrone, dans la même transaction `@Transactional`** que l'écriture en base (pas de pattern Outbox). Si Kafka échoue, l'erreur est logguée mais la transaction métier n'est pas annulée, on privilégie la disponibilité du service de réservation à la garantie stricte de livraison de l'événement.
-- **Pas de provisioning explicite des topics** (partitions, réplication, rétention), repoussé au Sprint 5.1, qui couvre la configuration complète de tous les topics Kafka de la plateforme. En dev, `KAFKA_AUTO_CREATE_TOPICS_ENABLE: true` (cf. `docker-compose.yml`) crée les topics à la volée avec les valeurs par défaut au premier message publié.
+
+---
+
+## Job planifié — rappel 24h
+
+`BookingReminderJob` (`@Scheduled(fixedRate = 15, TimeUnit.MINUTES)`) cherche les réservations `CONFIRMED` pas encore rappelées (`reminderSent = false`), et publie `booking.reminder` sur `booking-events` pour celles dont le rendez-vous a lieu dans moins de 24h (mais pas déjà passé).
+
+**Choix de conception** :
+- Le rappel se déclenche en **franchissant le seuil des 24h**, pas via une fenêtre étroite type "entre 23h50 et 24h10 avant", indépendant de la fréquence exacte du job, aucune réservation ne peut passer entre les mailles du filet, peu importe si le job tourne toutes les 5, 15 ou 30 minutes.
+- `reminderSent` (colonne `Booking`, migration `V7`) évite les doublons entre deux exécutions du job.
+- Le filtrage sur la date/heure exacte se fait **en Java**, pas en JPQL : le rendez-vous vit dans `TimeSlot` (date + startTime), pas directement sur `Booking`, et la comparaison combinée n'est pas trivialement exprimable en JPQL sans SQL natif, acceptable vu le volume attendu (liste des `CONFIRMED` non rappelées, pas toutes les réservations).
+- `@EnableScheduling` est isolé dans `SchedulingConfig.java`, une classe de config dédiée, plutôt que sur la classe principale de l'application.
+
+⚠️ **Limite connue** : si `booking-service` tournait en plusieurs instances (non prévu à ce stade du projet), deux instances pourraient théoriquement traiter la même réservation en même temps (pas de verrou distribué sur le job). Sans conséquence en dev/mono-instance.
 
 ---
 
@@ -775,6 +824,8 @@ Les claims extraits du token :
 - **`lawyerId` du path non vérifié contre l'utilisateur authentifié** : `AvailabilityController`, `TimeSlotController` et `LawyerBookingsController` vérifient uniquement le rôle `LAWYER` du token, pas que le `lawyerId` de l'URL correspond bien à l'avocat authentifié. Cette correspondance nécessite un appel inter-services vers le `lawyer-service` (résolution `authUserId` → `lawyerId`). N'importe quel compte `LAWYER` peut donc consulter le tableau de bord d'un autre avocat. À corriger avant la mise en production.
 - **Créneaux passés du jour même non filtrés à l'affichage** : `GET /slots?date=...` filtre par jour (`AVAILABLE` uniquement) mais ne tient pas compte de l'heure. Un créneau du jour déjà passé dans la journée peut donc encore apparaître dans la réponse, alors qu'il n'est plus réservable (`TimeSlot.isBookable()` existe mais n'est pas encore branché sur `TimeSlotService.getSlots()`).
 - **Aucune vérification d'appartenance côté avocat sur `confirm`/`reject`/`cancel`** : même limitation de fond que ci-dessus (pas de résolution `authUserId → lawyerId` sans appel au `lawyer-service`), mais plus sensible ici, n'importe quel compte `LAWYER` peut confirmer, refuser ou annuler la réservation d'un **autre** avocat. Côté client, la vérification est en revanche active sur `/cancel` (`Booking.clientId` = `authUserId` directement, pas d'appel inter-services nécessaire) : un client ne peut annuler que ses propres réservations (403 sinon). À corriger côté avocat avant la mise en production.
-- **Publication d'événements Kafka non transactionnelle avec la base** (pas de pattern Outbox) : cf. [Limites assumées pour ce sprint](#limites-assumées-pour-ce-sprint) dans la section Kafka. Un échec de publication après un commit BDD réussi ne fait pas échouer la requête HTTP, mais l'événement est perdu (seulement logué en erreur).
+- **Publication d'événements Kafka non transactionnelle avec la base** (pas de pattern Outbox) : cf. [Limites assumées](#limites-assumées) dans la section Kafka. Un échec de publication après un commit BDD réussi ne fait pas échouer la requête HTTP, mais l'événement est perdu (seulement logué en erreur).
 - **Inscription à la liste d'attente sans vérifier que l'avocat est réellement complet** : `POST /api/waitlist/{lawyerId}` accepte l'inscription même si l'avocat a des créneaux `AVAILABLE`. Le seul garde-fou est anti-doublon (contrainte `UNIQUE(lawyer_id, client_id)`). Ajout simple si besoin, via `TimeSlotRepository.findAvailableSlots`.
-- **Aucun nom de client sur le tableau de bord avocat** : `GET /api/lawyers/{lawyerId}/bookings` ne retourne que `clientId` (colonne de corrélation), il n'existe pas d'endpoint public dans l'auth-service pour résoudre un id en nom/email. Le frontend affiche `Client #<id>` en attendant.
+- **Aucun nom de client sur le tableau de bord avocat** : `GET /api/lawyers/{lawyerId}/bookings` ne retourne que `clientId` (colonne de corrélation). Il n'existe pas d'endpoint public dans l'auth-service pour résoudre un id en nom/email, corrigé côté backend au Sprint 5.3 (`GET /api/users/{id}/contact` sur l'auth-service, utilisé par le notification-service), mais le frontend n'a pas encore été mis à jour pour l'exploiter et affiche toujours `Client #<id>` en attendant.
+- **`GET /api/bookings/{id}` public, sans restriction** : n'importe qui connaissant un `bookingId` peut consulter son détail (date, heure, motif). Endpoint pensé pour un usage inter-services (le notification-service n'a pas de token applicatif), pas de mécanisme d'API key ou de réseau interne isolé pour restreindre l'accès aux seuls autres microservices à ce stade du projet.
+- **`BookingReminderJob` non résilient à une instance multiple** : cf. [Job planifié](#job-planifié--rappel-24h-sprint-55). Pas de verrou distribué (ex: Shedlock), acceptable en mono-instance mais à revoir avant un déploiement horizontal.

@@ -12,27 +12,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 
 /**
- * Publication des événements Booking sur Kafka — implémentation unique,
- * qui décide À L'EXÉCUTION (pas à l'enregistrement du bean) si Kafka est
- * disponible.
- *
- * Historique du bug corrigé ici (Sprint 5.2) : l'ancienne approche à
- * deux classes (KafkaBookingEventPublisher avec @ConditionalOnBean(KafkaTemplate.class),
- * NoOpBookingEventPublisher avec @ConditionalOnMissingBean) semblait
- * raisonnable mais était cassée par un piège d'ordre classique de Spring
- * Boot : ces deux classes sont de simples @Component, scannées AVANT que
- * la plupart des autoconfigurations (dont KafkaAutoConfiguration) n'aient
- * tourné. Résultat : au moment où @ConditionalOnBean(KafkaTemplate.class)
- * était évalué, le KafkaTemplate n'existait pas encore dans le contexte
- * → la condition échouait systématiquement → NoOp gagnait toujours, même
- * quand Kafka était parfaitement configuré et actif. Le KafkaTemplate
- * finissait par être créé (par l'autoconfiguration, plus tard), mais
- * plus rien ne l'utilisait.
- *
- * ObjectProvider<KafkaTemplate> contourne ce piège : sa résolution est
- * paresseuse, appelée à chaque publication plutôt qu'une seule fois à
- * l'enregistrement du bean, donc elle voit l'état final et complet du
- * contexte Spring, une fois toutes les autoconfigurations terminées.
+ * Publication des événements Booking sur Kafka.
  */
 @Component
 @RequiredArgsConstructor
@@ -59,11 +39,15 @@ public class BookingEventPublisherImpl implements BookingEventPublisher {
         publish("booking.cancelled", booking);
     }
 
+    @Override
+    public void publishBookingReminder(Booking booking) {
+        publish("booking.reminder", booking);
+    }
+
     private void publish(String eventType, Booking booking) {
         KafkaTemplate<String, String> kafkaTemplate = kafkaTemplateProvider.getIfAvailable();
 
         if (kafkaTemplate == null) {
-            // Kafka désactivé (dev local sans broker, cf. application.yaml)
             log.debug("Kafka désactivé - événement {} non publié pour bookingId={}",
                     eventType, booking.getId());
             return;
@@ -82,16 +66,10 @@ public class BookingEventPublisherImpl implements BookingEventPublisher {
 
         try {
             String payload = objectMapper.writeValueAsString(event);
-            // Clé = bookingId : garantit que tous les événements d'une même
-            // réservation atterrissent dans la même partition, donc dans
-            // l'ordre pour un consumer donné.
             kafkaTemplate.send(TOPIC, booking.getId().toString(), payload);
             log.info("Événement Kafka publié : type={}, bookingId={}, topic={}",
                     eventType, booking.getId(), TOPIC);
         } catch (JsonProcessingException e) {
-            // La sérialisation d'un DTO aussi simple ne devrait jamais
-            // échouer ; on logue plutôt que de faire échouer la
-            // transaction métier pour un problème de publication.
             log.error("Échec de sérialisation de l'événement {} pour bookingId={}",
                     eventType, booking.getId(), e);
         }

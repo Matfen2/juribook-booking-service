@@ -5,14 +5,6 @@ import juribook.booking_service.entity.Booking;
 /**
  * Abstraction de publication des événements liés au cycle de vie d'un
  * Booking, sur le topic Kafka booking-events.
- *
- * Deux implémentations, sélectionnées automatiquement selon la présence
- * ou non d'un KafkaTemplate en contexte (donc selon que Kafka est activé
- * ou non, cf. spring.autoconfigure.exclude dans application.yaml) :
- *   - KafkaBookingEventPublisher : publication réelle (prod / Kafka actif)
- *   - NoOpBookingEventPublisher  : simple log (dev local sans broker)
- *
- * Ainsi BookingService n'a jamais à savoir si Kafka est disponible ou non.
  */
 public interface BookingEventPublisher {
 
@@ -21,4 +13,11 @@ public interface BookingEventPublisher {
     void publishBookingConfirmed(Booking booking);
 
     void publishBookingCancelled(Booking booking);
+
+    /**
+     * Rappel automatique 24h avant le rendez-vous, publié
+     * par BookingReminderJob, pas par une action utilisateur directe,
+     * contrairement aux trois autres méthodes.
+     */
+    void publishBookingReminder(Booking booking);
 }
