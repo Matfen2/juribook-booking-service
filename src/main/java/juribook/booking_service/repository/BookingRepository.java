@@ -10,12 +10,14 @@ import java.util.List;
 @Repository
 public interface BookingRepository extends JpaRepository<Booking, Long> {
 
-    // Historique des réservations d'un client.
     List<Booking> findByClientId(Long clientId);
 
-    // Tableau de bord des réservations d'un avocat.
     List<Booking> findByLawyerId(Long lawyerId);
 
-    // Candidats au rappel 24h
+    // Candidats au rappel 24h.
     List<Booking> findByStatusAndReminderSentFalse(BookingStatus status);
+
+    // Réservations PENDING à annuler automatiquement quand
+    // l'avocat devient indisponible.
+    List<Booking> findByLawyerIdAndStatus(Long lawyerId, BookingStatus status);
 }

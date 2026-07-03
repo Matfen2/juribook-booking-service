@@ -15,6 +15,7 @@ import juribook.booking_service.exception.InvalidBookingException;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
 import juribook.booking_service.repository.BookingRepository;
+import juribook.booking_service.repository.LawyerStatusCacheRepository;
 import juribook.booking_service.repository.TimeSlotRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,16 +35,14 @@ import java.util.stream.Collectors;
 /**
  * Service métier pour la réservation de créneaux par les clients, leur
  * traitement par les avocats, leur annulation, l'historique client, le
- * tableau de bord avocat, la résolution inter-services d'une réservation,
- * et la publication des événements associés sur Kafka.
+ * tableau de bord avocat, la résolution inter-services, et la
+ * publication des événements associés sur Kafka.
  *
- * ⚠️ Limite connue : confirmBooking, rejectBooking, cancelBooking (côté
- * avocat) et getLawyerBookings ne vérifient PAS que le Booking/lawyerId
- * appartient bien à l'avocat authentifié (pas de résolution
- * authUserId → lawyerId sans appel au lawyer-service). Côté client en
- * revanche, l'appartenance EST vérifiée pour cancelBooking et
- * getMyBookings, car Booking.clientId est directement l'authUserId
- * extrait du JWT.
+ * cancelPendingBookingsForInactiveLawyer, appelée par
+ * LawyerEventConsumer quand un avocat devient indisponible, annule
+ * automatiquement toutes ses réservations encore PENDING (celles déjà
+ * CONFIRMED ne sont volontairement PAS touchées par ce sprint, cf.
+ * limites connues).
  */
 @Service
 @RequiredArgsConstructor
@@ -56,6 +55,7 @@ public class BookingService {
 
     private final BookingRepository bookingRepository;
     private final TimeSlotRepository timeSlotRepository;
+    private final LawyerStatusCacheRepository lawyerStatusCacheRepository;
     private final BookingEventPublisher bookingEventPublisher;
     private final SlotEventPublisher slotEventPublisher;
 
@@ -68,6 +68,7 @@ public class BookingService {
                 .orElseThrow(() -> new TimeSlotNotFoundException(
                     "Créneau introuvable : id=" + request.getTimeSlotId()));
 
+        validateLawyerIsActive(slot.getLawyerId());
         validateSlotIsBookable(slot);
 
         Booking booking = new Booking();
@@ -163,7 +164,49 @@ public class BookingService {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  Historique client / Tableau de bord avocat
+    //  Synchronisation inter-services
+    // ══════════════════════════════════════════════════════════
+    /**
+     * Annule automatiquement toutes les réservations PENDING d'un avocat
+     * qui vient de devenir indisponible (appelé par LawyerEventConsumer
+     * sur réception de lawyer.status-changed avec available=false).
+     *
+     * Comportement identique à rejectBooking, appliqué en boucle — même
+     * événements Kafka publiés (booking.cancelled + slot.released), pour
+     * que le notification-service traite ce cas exactement comme un
+     * refus normal, sans code dupliqué de son côté.
+     *
+     * ⚠️ Limite assumée : ne touche PAS aux réservations déjà CONFIRMED.
+     * Un rendez-vous confirmé reste engagé même si l'avocat se marque
+     * indisponible après coup (il a accepté avant, l'annulation d'un
+     * rendez-vous confirmé reste un choix explicite via /cancel, pas
+     * automatique). Seules les demandes encore PENDING, jamais
+     * validées par l'avocat, sont concernées.
+     */
+    @Transactional
+    public void cancelPendingBookingsForInactiveLawyer(Long lawyerId) {
+        List<Booking> pendingBookings = bookingRepository.findByLawyerIdAndStatus(lawyerId, BookingStatus.PENDING);
+
+        if (pendingBookings.isEmpty()) {
+            return;
+        }
+
+        for (Booking booking : pendingBookings) {
+            booking.setStatus(BookingStatus.CANCELLED);
+            Booking savedBooking = bookingRepository.save(booking);
+
+            releaseSlot(booking);
+
+            bookingEventPublisher.publishBookingCancelled(savedBooking);
+            slotEventPublisher.publishSlotReleased(booking.getLawyerId(), booking.getTimeSlotId());
+        }
+
+        log.info("{} réservation(s) PENDING annulée(s) automatiquement suite à la désactivation de l'avocat lawyerId={}",
+                pendingBookings.size(), lawyerId);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Historique client / Tableau de bord avocat / Détail
     // ══════════════════════════════════════════════════════════
     @Transactional(readOnly = true)
     public List<BookingHistoryResponse> getMyBookings(Long clientId) {
@@ -175,18 +218,6 @@ public class BookingService {
         return enrichAndSort(bookingRepository.findByLawyerId(lawyerId), false);
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  Résolution inter-services d'une réservation 
-    // ══════════════════════════════════════════════════════════
-    /**
-     * Détail enrichi (date/heure du créneau) d'une réservation par id,
-     * indépendamment du client ou de l'avocat propriétaire.
-     *
-     * Endpoint public (cf. GlobalExceptionHandler/SecurityConfig),
-     * consommé par le notification-service pour composer l'email de
-     * confirmation, qui n'a que bookingId + lawyerId +
-     * clientId depuis l'événement Kafka, pas la date/heure du rendez-vous.
-     */
     @Transactional(readOnly = true)
     public BookingHistoryResponse getBookingDetails(Long bookingId) {
         Booking booking = bookingRepository.findById(bookingId)
@@ -266,5 +297,14 @@ public class BookingService {
             throw new InvalidTimeSlotException(
                 "Impossible de réserver un créneau déjà passé");
         }
+    }
+
+    private void validateLawyerIsActive(Long lawyerId) {
+        lawyerStatusCacheRepository.findById(lawyerId).ifPresent(cache -> {
+            if (!cache.isAvailable()) {
+                throw new InvalidBookingException(
+                    "Cet avocat n'accepte plus de nouvelles réservations pour le moment");
+            }
+        });
     }
 }
