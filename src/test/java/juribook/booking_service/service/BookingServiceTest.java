@@ -12,6 +12,7 @@ import juribook.booking_service.exception.BookingConflictException;
 import juribook.booking_service.exception.InvalidTimeSlotException;
 import juribook.booking_service.exception.TimeSlotNotFoundException;
 import juribook.booking_service.repository.BookingRepository;
+import juribook.booking_service.repository.LawyerStatusCacheRepository;
 import juribook.booking_service.repository.TimeSlotRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,10 +38,16 @@ import static org.mockito.Mockito.*;
  * Tests de BookingService - réservation + double
  * réservation, 409 + publication d'événements Kafka.
  *
- * BookingEventPublisher et SlotEventPublisher sont mockés (jamais null)
- * depuis que BookingService en dépend dans son constructeur, sans ces
- * mocks, @InjectMocks injecte null et toute méthode qui publie un
- * événement lève une NullPointerException.
+ * BookingEventPublisher, SlotEventPublisher et LawyerStatusCacheRepository
+ * sont mockés (jamais null) depuis que BookingService en dépend dans son
+ * constructeur, sans ces mocks, @InjectMocks injecte null et toute
+ * méthode qui les utilise lève une NullPointerException.
+ *
+ * LawyerStatusCacheRepository n'a besoin d'aucun stubbing
+ * explicite pour ces tests : Mockito retourne automatiquement
+ * Optional.empty() pour une méthode non-stubbée qui renvoie un Optional
+ * (findById), ce qui correspond exactement au comportement "fail-open"
+ * attendu, aucune entrée de cache = avocat considéré actif.
  */
 @ExtendWith(MockitoExtension.class)
 class BookingServiceTest {
@@ -50,6 +57,9 @@ class BookingServiceTest {
 
     @Mock
     private TimeSlotRepository timeSlotRepository;
+
+    @Mock
+    private LawyerStatusCacheRepository lawyerStatusCacheRepository;
 
     @Mock
     private BookingEventPublisher bookingEventPublisher;
@@ -224,5 +234,42 @@ class BookingServiceTest {
 
         verify(timeSlotRepository, never()).save(any());
         verifyNoInteractions(bookingEventPublisher);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Avocat inactif
+    // ══════════════════════════════════════════════════════════
+    @Test
+    void createBooking_throws_whenLawyerMarkedInactiveInCache() {
+        juribook.booking_service.entity.LawyerStatusCache inactiveCache =
+                new juribook.booking_service.entity.LawyerStatusCache();
+        inactiveCache.setLawyerId(LAWYER_ID);
+        inactiveCache.setAvailable(false);
+
+        when(timeSlotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+        when(lawyerStatusCacheRepository.findById(LAWYER_ID)).thenReturn(Optional.of(inactiveCache));
+
+        assertThatThrownBy(() -> bookingService.createBooking(CLIENT_ID, request))
+                .hasMessageContaining("n'accepte plus de nouvelles réservations");
+
+        verifyNoInteractions(bookingRepository);
+        verifyNoInteractions(bookingEventPublisher);
+    }
+
+    @Test
+    void createBooking_succeeds_whenLawyerCacheEntryAbsent_failOpen() {
+        // Aucune entrée de cache pour cet avocat (jamais vu dans
+        // lawyer-events) → ne doit PAS bloquer la réservation.
+        when(timeSlotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+        when(lawyerStatusCacheRepository.findById(LAWYER_ID)).thenReturn(Optional.empty());
+        when(bookingRepository.save(any(Booking.class))).thenAnswer(inv -> {
+            Booking b = inv.getArgument(0);
+            b.setId(1L);
+            return b;
+        });
+
+        BookingResponse response = bookingService.createBooking(CLIENT_ID, request);
+
+        assertThat(response.getStatus()).isEqualTo(BookingStatus.PENDING);
     }
 }
