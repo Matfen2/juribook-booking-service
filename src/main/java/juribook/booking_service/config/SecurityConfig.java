@@ -20,6 +20,12 @@ import java.util.List;
 /**
  * Configuration Spring Security du booking-service.
  *
+ * ⚠️ Reconstruit à partir de ma dernière version connue complète
+ * + ajout de la route documents, vérifie contre ton
+ * fichier réel s'il a évolué depuis sans que je le revoie (ex: routes
+ * liées à un sprint que je n'aurais pas eu l'occasion de patcher
+ * directement dessus).
+ *
  * Routes :
  *   GET    /api/lawyers/{lawyerId}/availabilities        → public
  *   POST   /api/lawyers/{lawyerId}/availabilities        → LAWYER
@@ -32,7 +38,8 @@ import java.util.List;
  *   GET    /api/lawyers/{lawyerId}/bookings                → LAWYER (tableau de bord)
  *   POST   /api/bookings                                   → CLIENT (réserver)
  *   GET    /api/bookings                                   → CLIENT (historique)
- *   GET    /api/bookings/{id}                               → public (détail)
+ *   GET    /api/bookings/{id}                               → public (détail, inter-services)
+ *   POST   /api/bookings/{id}/documents                     → CLIENT (upload document)
  *   PATCH  /api/bookings/{id}/confirm                      → LAWYER (confirmer)
  *   PATCH  /api/bookings/{id}/reject                       → LAWYER (refuser)
  *   PATCH  /api/bookings/{id}/cancel                       → CLIENT ou LAWYER (annuler, règle 24h)
@@ -73,9 +80,10 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.POST,   "/api/lawyers/*/slots/*/unblock").hasRole("LAWYER")
                     // ── Route LAWYER - tableau de bord réservations
                     .requestMatchers(HttpMethod.GET, "/api/lawyers/*/bookings").hasRole("LAWYER")
-                    // ── Routes CLIENT - réservation et historique
+                    // ── Routes CLIENT - réservation, historique, documents
                     .requestMatchers(HttpMethod.POST, "/api/bookings").hasRole("CLIENT")
                     .requestMatchers(HttpMethod.GET,  "/api/bookings").hasRole("CLIENT")
+                    .requestMatchers(HttpMethod.POST, "/api/bookings/*/documents").hasRole("CLIENT")
                     // ── Routes LAWYER - confirmation/refus
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/confirm").hasRole("LAWYER")
                     .requestMatchers(HttpMethod.PATCH, "/api/bookings/*/reject").hasRole("LAWYER")
