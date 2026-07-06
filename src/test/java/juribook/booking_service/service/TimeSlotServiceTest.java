@@ -72,7 +72,6 @@ class TimeSlotServiceTest {
     // ══════════════════════════════════════════════════════════
     //  createTimeSlot - créneaux passés
     // ══════════════════════════════════════════════════════════
-
     @Test
     void createTimeSlot_throws_whenDateTimeInPast() {
         CreateTimeSlotRequest request = buildRequest(LocalDate.now().minusDays(1),
@@ -87,8 +86,20 @@ class TimeSlotServiceTest {
 
     @Test
     void createTimeSlot_throws_whenTodayButStartTimeAlreadyPassed() {
+        // Garde-fou : si l'heure actuelle est trop proche de minuit,
+        // LocalTime.now().minusHours(1) "wrappe" vers la veille (23h passé),
+        // qui se compare alors comme PLUS TARD que l'heure actuelle
+        // (LocalTime n'a pas de notion de date), le service ne détecterait
+        // plus le créneau comme passé, et save() (non stubbé) renverrait
+        // null → NullPointerException au lieu de InvalidTimeSlotException.
+        // Même risque que TimeSlotTest#isBookable_false_whenTodayButStartTimeAlreadyPassed.
+        LocalTime oneHourAgo = LocalTime.now().minusHours(1);
+        if (oneHourAgo.isAfter(LocalTime.now())) {
+            return; // heure actuelle < 1h du matin, on évite le faux négatif
+        }
+
         CreateTimeSlotRequest request = buildRequest(LocalDate.now(),
-                LocalTime.now().minusHours(1), LocalTime.now().minusMinutes(30));
+                oneHourAgo, LocalTime.now().minusMinutes(30));
 
         assertThatThrownBy(() -> timeSlotService.createTimeSlot(LAWYER_ID, request))
                 .isInstanceOf(InvalidTimeSlotException.class)

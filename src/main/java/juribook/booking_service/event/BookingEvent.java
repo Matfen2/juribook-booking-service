@@ -1,14 +1,21 @@
 package juribook.booking_service.event;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 
 /**
- * Payload sérialisé en JSON et publié sur le topic Kafka booking-events.
+ * Payload publié sur booking-events.
  *
- * eventType vaut "booking.created", "booking.confirmed" ou
- * "booking.cancelled" (le refus d'une demande PENDING par l'avocat
- * publie aussi "booking.cancelled", il n'y a pas de statut BookingStatus
- * REJECTED distinct, cf. Booking.java).
+ * ⚠️ Reconstruit à partir du site d'appel dans BookingEventPublisherImpl
+ * (record positionnel), si le fichier original avait d'autres champs ou
+ * un ordre différent, ajuste en conséquence.
+ *
+ * slotDate/slotStartTime ajoutés pour la métrique "heures de
+ * pointe" côté audit-service (heures des RENDEZ-VOUS, pas des créations
+ * de réservation, occurredAt reste l'heure de publication de l'event).
+ * Nullable si jamais le TimeSlot associé a disparu entre-temps (ne
+ * devrait pas arriver en pratique, cf. BookingEventPublisherImpl).
  */
 public record BookingEvent(
     String eventType,
@@ -18,6 +25,8 @@ public record BookingEvent(
     Long timeSlotId,
     String status,
     String reason,
-    LocalDateTime occurredAt
+    LocalDateTime occurredAt,
+    LocalDate slotDate,
+    LocalTime slotStartTime
 ) {
 }
