@@ -17,15 +17,15 @@ Microservice de gestion des disponibilités, créneaux et réservations pour **J
 ```
 src/main/java/juribook/booking_service/
 ├── config/
-│   ├── SecurityConfig.java               # Règles d'accès par rôle + CORS + filtre JWT
-│   ├── OpenApiConfig.java                # Configuration Swagger UI
-│   └── SchedulingConfig.java             # Active @Scheduled - nécessaire à BookingReminderJob
+│   ├── SecurityConfig.java             # Règles d'accès par rôle + CORS + filtre JWT
+│   ├── OpenApiConfig.java              # Configuration Swagger UI
+│   └── SchedulingConfig.java           # Active @Scheduled - nécessaire à BookingReminderJob
 ├── controller/
-│   ├── AvailabilityController.java       # POST/GET/DELETE /api/lawyers/{id}/availabilities
-│   ├── TimeSlotController.java           # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
-│   ├── BookingController.java            # POST/GET /api/bookings + GET /{id} + PATCH confirm/reject/cancel
-│   ├── LawyerBookingsController.java     # GET /api/lawyers/{id}/bookings, tableau de bord avocat
-│   └── WaitlistController.java           # POST/GET /api/waitlist/{lawyerId}
+│   ├── AvailabilityController.java     # POST/GET/DELETE /api/lawyers/{id}/availabilities
+│   ├── TimeSlotController.java         # POST/GET/DELETE /api/lawyers/{id}/slots + block/unblock
+│   ├── BookingController.java          # POST/GET /api/bookings + /{id} + PATCH confirm/reject/cancel
+│   ├── LawyerBookingsController.java   # GET /api/lawyers/{id}/bookings, tableau de bord avocat
+│   └── WaitlistController.java         # POST/GET /api/waitlist/{lawyerId}
 ├── dto/
 │   ├── request/
 │   │   ├── CreateAvailabilityRequest.java
@@ -40,48 +40,48 @@ src/main/java/juribook/booking_service/
 │       ├── BookingHistoryResponse.java   # BookingResponse enrichi de la date/heure du créneau
 │       └── WaitlistEntryResponse.java
 ├── entity/
-│   ├── Availability.java                 # Disponibilité récurrente hebdomadaire
-│   ├── TimeSlot.java                     # Créneau concret daté, réservable
-│   ├── SlotStatus.java                   # AVAILABLE | BOOKED | BLOCKED | CANCELLED | COMPLETED
-│   ├── Booking.java                      # Réservation d'un créneau par un client — inclut reminderSent
-│   ├── BookingStatus.java                # PENDING | CONFIRMED | COMPLETED | CANCELLED
-│   ├── WaitlistEntry.java                # Inscription d'un client sur la liste d'attente d'un avocat
-│   └── LawyerStatusCache.java            # Cache local de disponibilité avocat, synchronisé via lawyer-events
+│   ├── Availability.java               # Disponibilité récurrente hebdomadaire
+│   ├── TimeSlot.java                   # Créneau concret daté, réservable
+│   ├── SlotStatus.java                 # AVAILABLE | BOOKED | BLOCKED | CANCELLED | COMPLETED
+│   ├── Booking.java                    # Réservation d'un créneau par un client - inclut reminderSent
+│   ├── BookingStatus.java              # PENDING | CONFIRMED | COMPLETED | CANCELLED
+│   ├── WaitlistEntry.java              # Inscription d'un client sur la liste d'attente d'un avocat
+│   └── LawyerStatusCache.java          # Cache local de disponibilité avocat, synchronisé via lawyer-events
 ├── event/
-│   ├── BookingEventPublisher.java        # Interface — booking.created/confirmed/cancelled/reminder
-│   ├── BookingEvent.java                 # Payload JSON booking-events
-│   ├── BookingEventPublisherImpl.java    # Impl unique, décide à l'exécution via ObjectProvider<KafkaTemplate>
-│   ├── SlotEventPublisher.java           # Interface — événements slot-events
-│   ├── SlotReleasedEvent.java            # Payload JSON slot.released (lawyerId + slotId)
-│   ├── SlotEventPublisherImpl.java       # Impl unique, même pattern que BookingEventPublisherImpl
-│   ├── LawyerEvent.java                  # Miroir du payload lawyer-events (lawyer-service)
-│   └── LawyerEventConsumer.java          # @KafkaListener sur lawyer-events — première consommation de ce service
+│   ├── BookingEventPublisher.java      # Interface - booking.created/confirmed/cancelled/reminder
+│   ├── BookingEvent.java               # Payload JSON booking-events - enrichi slotDate/slotStartTime
+│   ├── BookingEventPublisherImpl.java  # Impl unique, décide à l'exécution via ObjectProvider<KafkaTemplate>, résout le TimeSlot associé
+│   ├── SlotEventPublisher.java         # Interface - événements slot-events
+│   ├── SlotReleasedEvent.java          # Payload JSON slot.released (lawyerId + slotId)
+│   ├── SlotEventPublisherImpl.java     # Impl unique, même pattern que BookingEventPublisherImpl
+│   ├── LawyerEvent.java                # Miroir du payload lawyer-events (lawyer-service)
+│   └── LawyerEventConsumer.java        # @KafkaListener sur lawyer-events - première consommation de ce service
 ├── exception/
-│   ├── GlobalExceptionHandler.java       # Handlers 400/403/404/409/500
+│   ├── GlobalExceptionHandler.java     # Handlers 400/403/404/409/500
 │   ├── InvalidAvailabilityException.java
 │   ├── AvailabilityNotFoundException.java
 │   ├── InvalidTimeSlotException.java
 │   ├── TimeSlotNotFoundException.java
-│   ├── BookingConflictException.java     # 409 - créneau déjà réservé
-│   ├── BookingNotFoundException.java     # 404 - réservation introuvable
-│   ├── InvalidBookingException.java      # 400 - transition de statut Booking invalide (inclut avocat indisponible)
-│   └── AlreadyOnWaitlistException.java   # 409 - déjà inscrit sur cette liste d'attente
+│   ├── BookingConflictException.java   # 409 - créneau déjà réservé
+│   ├── BookingNotFoundException.java   # 404 - réservation introuvable
+│   ├── InvalidBookingException.java    # 400 - transition de statut Booking invalide (inclut avocat indisponible)
+│   └── AlreadyOnWaitlistException.java # 409 - déjà inscrit sur cette liste d'attente
 ├── filter/
-│   └── JwtAuthenticationFilter.java      # Filtre Spring Security (OncePerRequestFilter)
+│   └── JwtAuthenticationFilter.java    # Filtre Spring Security (OncePerRequestFilter)
 ├── job/
-│   └── BookingReminderJob.java           # @Scheduled — rappel 24h avant le rendez-vous
+│   └── BookingReminderJob.java         # @Scheduled - rappel 24h avant le rendez-vous
 ├── repository/
 │   ├── AvailabilityRepository.java
-│   ├── TimeSlotRepository.java           # Inclut findByIdForUpdate (verrou pessimiste)
-│   ├── BookingRepository.java            # findByClientId, findByLawyerId, findByStatusAndReminderSentFalse, findByLawyerIdAndStatus
+│   ├── TimeSlotRepository.java         # Inclut findByIdForUpdate (verrou pessimiste)
+│   ├── BookingRepository.java          # findByClientId, findByLawyerId, findByStatusAndReminderSentFalse, findByLawyerIdAndStatus
 │   ├── WaitlistRepository.java
-│   └── LawyerStatusCacheRepository.java  # Sprint 5.9
-└── service/
-    ├── AvailabilityService.java          # Validation, chevauchement, génération des créneaux
-    ├── TimeSlotService.java              # Créneaux ponctuels, blocage de période, consultation
-    ├── BookingService.java               # Réservation, confirmation/refus, annulation, historique, tableau de bord, détail inter-services, synchronisation avocat, événements
-    ├── WaitlistService.java              # Inscription et consultation de la liste d'attente
-    └── JwtService.java                   # Validation des tokens JWT (lecture seule)
+│   └── LawyerStatusCacheRepository.java 
+├── service/
+│   ├── AvailabilityService.java        # Validation, chevauchement, génération des créneaux (bug de borne corrigé, cf. Notes techniques)
+│   ├── TimeSlotService.java            # Créneaux ponctuels, blocage de période, consultation
+│   ├── BookingService.java             # Réservations, confirmation/refus, annulation, historique, tableau de bord, synchronisation avocat, événements
+│   ├── WaitlistService.java            # Inscription et consultation de la liste d'attente
+│   └── JwtService.java                 # Validation des tokens JWT (lecture seule)
 src/main/resources/
 ├── application.yaml
 └── db/migration/
@@ -95,10 +95,12 @@ src/main/resources/
     └── V8__create_lawyer_status_cache_table.sql
 src/test/java/juribook/booking_service/
 ├── entity/
-│   └── TimeSlotTest.java
+│   └── TimeSlotTest.java              
+├── event/
+│   └── BookingEventPublisherImplTest.java  
 └── service/
     ├── AvailabilityServiceTest.java
-    ├── TimeSlotServiceTest.java
+    ├── TimeSlotServiceTest.java        
     ├── BookingServiceTest.java
     ├── BookingLifecycleTest.java
     └── WaitlistServiceTest.java
@@ -179,7 +181,7 @@ mvn test
 
 ### Le problème (UC-K4 du cahier des charges)
 
-Un avocat se marque indisponible (`PUT /api/lawyers/profile` avec `available: false` côté `lawyer-service`). Sans synchronisation, `booking-service` continuerait à accepter de nouvelles réservations pour lui, il n'a aucune notion de cet état, ses seules données sont les `TimeSlot`, indépendants du statut global de l'avocat.
+Un avocat se marque indisponible (`PUT /api/lawyers/profile` avec `available: false` côté `lawyer-service`). Sans synchronisation, `booking-service` continuerait à accepter de nouvelles réservations pour lui, il n'a aucune notion de cet état, ces seules données sont les `TimeSlot` indépendants du statut global de l'avocat.
 
 ### La solution
 
@@ -194,7 +196,7 @@ public void onLawyerEvent(String payload) {
 }
 ```
 
-`BookingService.createBooking` lit ce cache **localement**, de façon synchrone, avant toute réservation — jamais d'appel réseau au `lawyer-service` à chaque `POST /api/bookings`. C'est le principe de cohérence éventuelle (eventual consistency) plutôt que synchrone : il peut exister une courte fenêtre entre le changement réel côté `lawyer-service` et sa prise en compte ici, le temps que l'événement Kafka soit consommé, acceptable pour ce cas d'usage.
+`BookingService.createBooking` lit ce cache **localement**, de façon synchrone, avant toute réservation, jamais d'appel réseau au `lawyer-service` à chaque `POST /api/bookings`. C'est le principe de cohérence éventuelle (eventual consistency) plutôt que synchrone : il peut exister une courte fenêtre entre le changement réel côté `lawyer-service` et sa prise en compte ici, le temps que l'événement Kafka soit consommé, acceptable pour ce cas d'usage.
 
 **Comportement fail-open** : si un `lawyerId` n'a jamais d'entrée dans le cache (avant ce sprint, ou avant son premier changement de disponibilité), la réservation est **autorisée**, pas bloquée, un avocat qui n'a jamais explicitement changé sa disponibilité ne doit pas se retrouver arbitrairement inaccessible.
 
@@ -211,31 +213,31 @@ Côté `notification-service`, `booking.cancelled` déclenche désormais un vrai
 ## Cas d'erreur
 
 ```
-POST /availabilities avec endTime <= startTime          → 400 "L'heure de fin doit être après l'heure de début"
-POST /availabilities chevauchant une dispo existante     → 400 "Cette plage horaire chevauche une disponibilité existante pour ce jour"
-POST /slots dans le passé                                 → 400 "Impossible de créer un créneau dans le passé"
-POST /slots chevauchant un créneau existant                → 400 "Ce créneau chevauche un créneau existant à cette date"
-DELETE /slots/{id} sur un créneau BOOKED                  → 400 "Impossible de supprimer un créneau réservé"
-DELETE /slots/{id} sur un créneau COMPLETED                → 400 "Impossible de supprimer un créneau déjà honoré"
-POST /slots/{id}/unblock sur un créneau non bloqué         → 400 "Ce créneau n'est pas bloqué"
-POST /bookings pour un avocat indisponible (Sprint 5.9)     → 400 "Cet avocat n'accepte plus de nouvelles réservations pour le moment"
-POST /bookings sur un timeSlotId inexistant                → 404 "Créneau introuvable : id=..."
-POST /bookings sur un créneau déjà BOOKED                  → 409 "Ce créneau est déjà réservé"
-POST /bookings sur un créneau BLOCKED/CANCELLED/COMPLETED   → 400 "Ce créneau n'est plus disponible à la réservation"
-POST /bookings sur un créneau déjà passé                   → 400 "Impossible de réserver un créneau déjà passé"
-POST /bookings sans reason                                  → 400 "Le motif de consultation est obligatoire"
-GET /bookings/{id} sur un bookingId inconnu                 → 404 "Réservation introuvable : id=..."
-PATCH /bookings/{id}/confirm ou /reject sur bookingId inconnu → 404 "Réservation introuvable : id=..."
-PATCH /bookings/{id}/confirm ou /reject si pas PENDING      → 400 "Cette action nécessite une réservation PENDING (statut actuel : ...)"
-PATCH /bookings/{id}/cancel si pas CONFIRMED                → 400 "Cette action nécessite une réservation CONFIRMED (statut actuel : ...)"
-PATCH /bookings/{id}/cancel à moins de 24h du rendez-vous    → 400 "Annulation impossible : le rendez-vous a lieu le ..., soit dans moins de 24h. ..."
-PATCH /bookings/{id}/cancel par un client non propriétaire   → 403 "Cette réservation n'appartient pas à ce client"
-POST /waitlist/{lawyerId} déjà inscrit                        → 409 "Vous êtes déjà inscrit sur la liste d'attente de cet avocat"
-GET /bookings d'un client sans aucune réservation              → 200 []
-GET /lawyers/{lawyerId}/bookings d'un avocat sans réservation   → 200 []
-Toute route LAWYER sans token                               → 401 Unauthorized
-Toute route LAWYER avec token CLIENT                         → 403 Forbidden
-Toute route CLIENT avec token LAWYER                          → 403 Forbidden
+POST /availabilities avec endTime <= startTime                → 400 "L'heure de fin doit être après l'heure de début"
+POST /availabilities chevauchant une dispo existante           → 400 "Cette plage horaire chevauche une disponibilité existante pour ce jour"
+POST /slots dans le passé                                       → 400 "Impossible de créer un créneau dans le passé"
+POST /slots chevauchant un créneau existant                     → 400 "Ce créneau chevauche un créneau existant à cette date"
+DELETE /slots/{id} sur un créneau BOOKED                        → 400 "Impossible de supprimer un créneau réservé"
+DELETE /slots/{id} sur un créneau COMPLETED                      → 400 "Impossible de supprimer un créneau déjà honoré"
+POST /slots/{id}/unblock sur un créneau non bloqué               → 400 "Ce créneau n'est pas bloqué"
+POST /bookings pour un avocat indisponible (Sprint 5.9)          → 400 "Cet avocat n'accepte plus de nouvelles réservations pour le moment"
+POST /bookings sur un timeSlotId inexistant                      → 404 "Créneau introuvable : id=..."
+POST /bookings sur un créneau déjà BOOKED                         → 409 "Ce créneau est déjà réservé"
+POST /bookings sur un créneau BLOCKED/CANCELLED/COMPLETED          → 400 "Ce créneau n'est plus disponible à la réservation"
+POST /bookings sur un créneau déjà passé                          → 400 "Impossible de réserver un créneau déjà passé"
+POST /bookings sans motif                                          → 400 "Le motif de consultation est obligatoire"
+GET /bookings/{id} sur un bookingId inconnu                        → 404 "Réservation introuvable : id=..."
+PATCH /bookings/{id}/confirm ou /reject sur bookingId inconnu       → 404 "Réservation introuvable : id=..."
+PATCH /bookings/{id}/confirm ou /reject sur une réservation PENDING → 400 "Cette action nécessite une réservation PENDING (statut actuel : ...)"
+PATCH /bookings/{id}/cancel si pas CONFIRMED                        → 400 "Cette action nécessite une réservation CONFIRMED (statut actuel : ...)"
+PATCH /bookings/{id}/cancel à moins de 24h du rendez-vous            → 400 "Annulation impossible : le rendez-vous a lieu le ..., soit dans moins de 24h. ..."
+PATCH /bookings/{id}/cancel par un client non propriétaire           → 403 "Cette réservation n'appartient pas à ce client"
+POST /waitlist/{lawyerId} déjà inscrit                                → 409 "Vous êtes déjà inscrit sur la liste d'attente de cet avocat"
+GET /bookings d'un client sans aucune réservation                     → 200 []
+GET /lawyers/{lawyerId}/bookings d'un avocat sans réservation           → 200 []
+Toute route LAWYER sans token                                          → 401 Unauthorized
+Toute route LAWYER avec token CLIENT                                    → 403 Forbidden
+Toute route CLIENT avec token LAWYER                                    → 403 Forbidden
 ```
 
 ---
@@ -288,7 +290,7 @@ docker exec -it juribook-postgres-booking psql -U juribook -d bookingdb -c "SELE
 
 ### Activation
 
-Une seule implémentation par interface (`BookingEventPublisherImpl`, `SlotEventPublisherImpl`), qui décide **à l'exécution** si Kafka est disponible, via `ObjectProvider<KafkaTemplate<String, String>>` — cf. l'historique du fix (`@ConditionalOnBean` sur un `@Component` classique est cassé par l'ordre de scan vs autoconfiguration Spring Boot).
+Une seule implémentation par interface (`BookingEventPublisherImpl`, `SlotEventPublisherImpl`), qui décide **à l'exécution** si Kafka est disponible, via `ObjectProvider<KafkaTemplate<String, String>>`, cf. l'historique du fix (`@ConditionalOnBean` sur un `@Component` classique est cassé par l'ordre de scan vs autoconfiguration Spring Boot).
 
 ### Topics produits
 
@@ -297,7 +299,25 @@ Une seule implémentation par interface (`BookingEventPublisherImpl`, `SlotEvent
 | `booking-events` | `booking.created`, `booking.confirmed`, `booking.cancelled`, `booking.reminder` | Actions client/avocat + `BookingReminderJob` + annulation automatique |
 | `slot-events` | `slot.released` | `/reject`, `/cancel`, annulation automatique |
 
-### Topic consommé - nouveauté
+### Payload `booking-events` enrichi
+
+`BookingEvent` porte désormais `slotDate`/`slotStartTime` en plus des champs existants, nécessaire à la métrique "heures de pointe" côté `audit-service`, celle-ci doit connaître l'heure du **rendez-vous**, pas celle de la **création** de l'événement (`occurredAt` reste l'heure de publication, un concept distinct).
+
+```json
+{
+    "eventType": "booking.created",
+    "bookingId": 900,
+    "lawyerId": 4,
+    "clientId": 42,
+    "slotDate": "2026-07-10",
+    "slotStartTime": "14:30:00",
+    "occurredAt": "2026-07-08T09:15:22.123"
+}
+```
+
+`BookingEventPublisherImpl` résout le `TimeSlot` associé via `TimeSlotRepository` **au moment de la publication** (pas de dénormalisation préalable sur `Booking`). Défensif : si le slot est introuvable, publie quand même l'événement avec `slotDate`/`slotStartTime` à `null` et logue un warning, ne bloque jamais la publication pour cette raison.
+
+### Topic consommé
 
 | Topic | Consumer | Événements | Effet |
 |---|---|---|---|
@@ -315,12 +335,13 @@ docker exec -it juribook-kafka kafka-console-consumer --bootstrap-server localho
 ### Limites assumées
 
 - **Publication synchrone, dans la même transaction `@Transactional`** que l'écriture en base (pas de pattern Outbox).
+- **`slotDate`/`slotStartTime` absents des événements publiés** : `BookingAnalyticsConsumer` (audit-service) tolère leur absence sur les anciens messages, mais ces réservations passées n'apparaîtront jamais dans la métrique "heures de pointe", pas de backfill possible sans republier ces événements.
 
 ---
 
-## Job planifié — rappel 24h (Sprint 5.5)
+## Job planifié — rappel 24h
 
-`BookingReminderJob` (`@Scheduled(fixedRate = 15, TimeUnit.MINUTES)`) cherche les réservations `CONFIRMED` pas encore rappelées (`reminderSent = false`), publie `booking.reminder` pour celles dont le rendez-vous a lieu dans moins de 24h. `reminderSent` évite les doublons entre deux exécutions.
+`BookingReminderJob` (`@Scheduled(fixedRate = 15, TimeUnit.MINUTES)`) cherche les réservations `CONFIRMED` pas encore rappelées (`reminderSent = false`) pour celles dont le rendez-vous a lieu dans moins de 24h, publie `booking.reminder` pour celles-là. `reminderSent` évite les doublons entre deux exécutions.
 
 ---
 
@@ -338,6 +359,7 @@ mvn test
 | `BookingServiceTest.java` | create/confirm/reject/cancel/getMyBookings, 409, règle 24h |
 | `BookingLifecycleTest.java` | Cycle complet create→confirm→cancel et create→reject |
 | `WaitlistServiceTest.java` | Inscription, doublon, race condition, consultation |
+| `BookingEventPublisherImplTest.java` | Enrichissement slotDate/slotStartTime, slot introuvable, Kafka indisponible |
 
 ⚠️ Pas encore de test dédié pour `LawyerEventConsumer`/`cancelPendingBookingsForInactiveLawyer`, à couvrir dans une prochaine itération.
 
@@ -346,6 +368,22 @@ mvn test
 ## Sécurité JWT
 
 Le booking-service **ne génère pas** de JWT, il valide uniquement les tokens émis par l'auth-service.
+
+---
+
+## Notes techniques
+
+### Bug de borne dans `AvailabilityService`
+
+`generateSlotsForAvailability` bouclait une fois de trop quand le jour de démarrage (aujourd'hui) tombait déjà sur le jour de semaine ciblé par l'`Availability` : `cursor` devenait alors exactement égal à `endSearch` après `weeks` itérations, et la condition de boucle `!cursor.isAfter(endSearch)` (équivalente à `<=`) laissait passer une occurrence en trop, doublant le nombre de créneaux générés. Révélé un lundi (les tests utilisent `DayOfWeek.MONDAY`), invisible les autres jours de la semaine. Corrigé en `cursor.isBefore(endSearch)` (strict), ne change le comportement que dans ce cas d'égalité exacte, tous les autres scénarios restent identiques.
+
+### Flakiness minuit dans `TimeSlotTest`/`TimeSlotServiceTest`
+
+`LocalTime.now().minusHours(1)` exécuté près de minuit (ex: 00h05) "wrappe" vers la veille (23h05) - `LocalTime` n'a pas de notion de date, cette heure se compare alors comme **plus tard** que l'heure actuelle, produisant un faux négatif sur des tests censés vérifier qu'un créneau "déjà passé aujourd'hui" est bien détecté comme tel. Garde-fou ajouté (skip silencieux du test si l'heure actuelle est trop proche de minuit), cohérent avec un garde-fou similaire déjà présent sur un test voisin.
+
+### `ObjectMapper` de test - désactiver `WRITE_DATES_AS_TIMESTAMPS` explicitement
+
+`BookingEventPublisherImplTest` construit son propre `ObjectMapper` (`new ObjectMapper().findAndRegisterModules()`) pour vérifier le JSON publié, ce constructeur enregistre le support `java.time` mais **ne désactive pas** la sérialisation des dates en tableau de composants numériques par défaut de Jackson (contrairement à l'`ObjectMapper` de production, configuré explicitement dans `JacksonConfig`). Sans `.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)` sur l'`ObjectMapper` du test lui-même, les assertions sur `slotDate`/`occurredAt` échouaient en comparant une chaîne ISO à un tableau `[2026,7,10]`.
 
 ---
 
@@ -360,3 +398,4 @@ Le booking-service **ne génère pas** de JWT, il valide uniquement les tokens �
 - **`BookingReminderJob` non résilient à une instance multiple**, pas de verrou distribué.
 - **Le cache `LawyerStatusCache` n'est jamais nettoyé** : un avocat supprimé côté `lawyer-service` (hypothèse non gérée à ce stade du projet, pas d'endpoint de suppression) laisserait une entrée orpheline ici, sans conséquence pratique (juste une ligne inutile).
 - **Les réservations `CONFIRMED` d'un avocat désactivé ne sont pas automatiquement annulées**, volontaire, cf. section dédiée.
+- **`slotDate`/`slotStartTime` absents sur les événements publiés** - cf. Kafka → Limites assumées.
