@@ -1,10 +1,10 @@
 # ═══════════════════════════════════════════════════════════
-#  GitHub Actions CI/CD — booking-service
-#  Pipeline : build → test → docker build & push (GHCR)
-#  Déclenché sur push develop et pull request vers main
+#  GitHub Actions CI/CD - booking-service
+#  Pipeline : build → test → docker build & push (Scaleway) → deploy staging
+#  Déclenché sur push develop/features/test et pull request vers develop
 #
 #  Tests : unitaires Mockito (pas de BDD requise)
-#  Docker : image poussée vers ghcr.io sur push develop
+#  Docker : image poussée vers Scaleway Container Registry sur push develop
 # ═══════════════════════════════════════════════════════════
 
 name: CI
@@ -12,6 +12,7 @@ name: CI
 on:
   push:
     branches:
+      - develop
       - features/test
   pull_request:
     branches:
@@ -21,7 +22,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   #  Build + Tests Maven
-  #  Pas de PostgreSQL en CI — les tests unitaires
+  #  Pas de PostgreSQL en CI - les tests unitaires
   #  utilisent Mockito (pas de contexte Spring)
   # ─────────────────────────────────────────────
   build-and-test:
@@ -53,7 +54,7 @@ jobs:
           path: target/surefire-reports/
 
   # ─────────────────────────────────────────────
-  #  Docker Build & Push vers GHCR
+  #  Docker Build & Push vers Scaleway Container Registry
   #  (sur push develop uniquement)
   # ─────────────────────────────────────────────
   docker:
@@ -66,12 +67,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Scaleway Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: rg.fr-par.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -79,5 +80,51 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/booking-service:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/booking-service:latest
+            rg.fr-par.scw.cloud/juribook/booking-service:${{ github.sha }}
+            rg.fr-par.scw.cloud/juribook/booking-service:staging-latest
+
+  # ─────────────────────────────────────────────
+  #  Déploiement staging (cluster Kapsule)
+  #  (sur push develop uniquement, après le push Docker)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+
+    steps:
+      - name: Install Scaleway CLI
+        run: curl -s https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+
+      - name: Create Scaleway config file
+        run: mkdir -p ~/.config/scw && touch ~/.config/scw/config.yaml
+
+      - name: Configure Scaleway CLI
+        run: |
+          scw config set access-key="${{ secrets.SCW_ACCESS_KEY }}"
+          scw config set secret-key="${{ secrets.SCW_SECRET_KEY }}"
+          scw config set default-project-id="${{ secrets.SCW_PROJECT_ID }}"
+          scw config set default-organization-id="${{ secrets.SCW_ORGANIZATION_ID }}"
+          scw config set default-region=fr-par
+          scw config set default-zone=fr-par-1
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Fetch Kapsule kubeconfig
+        run: scw k8s kubeconfig install "${{ secrets.KAPSULE_CLUSTER_ID }}" region=fr-par
+
+      - name: Deploy new image to staging
+        run: |
+          kubectl set image deployment/booking-service \
+            booking-service=rg.fr-par.scw.cloud/juribook/booking-service:${{ github.sha }} \
+            -n juribook
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/booking-service -n juribook --timeout=180s
+
+      - name: Verify pod health
+        run: |
+          kubectl wait --for=condition=ready pod -l app=booking-service -n juribook --timeout=120s
