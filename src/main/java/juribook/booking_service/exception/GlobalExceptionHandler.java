@@ -15,7 +15,8 @@ import java.util.Map;
  * Gestionnaire global des exceptions HTTP pour le booking-service.
  *
  * Codes HTTP retournés :
- *   400 → validation des champs (@Valid), disponibilité/créneau invalide, ou transition de statut Booking invalide
+ *   400 → validation des champs (@Valid), disponibilité/créneau invalide, transition de statut Booking invalide, ou upload de document invalide 
+ *   401 → authentification manquante ou invalide
  *   403 → réservation n'appartenant pas à l'appelant
  *   404 → disponibilité, créneau ou réservation introuvable
  *   409 → créneau déjà réservé ou déjà inscrit sur liste d'attente
@@ -86,6 +87,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidBookingException.class)
     public ResponseEntity<Map<String, String>> handleInvalidBooking(
             InvalidBookingException ex) {
+        return ResponseEntity.badRequest()
+                .body(Map.of("message", ex.getMessage()));
+    }
+
+    // ── Upload de documents (Sprint 6.6) ─────────────
+    @ExceptionHandler(DocumentUploadException.class)
+    public ResponseEntity<Map<String, String>> handleDocumentUpload(
+            DocumentUploadException ex) {
         return ResponseEntity.badRequest()
                 .body(Map.of("message", ex.getMessage()));
     }

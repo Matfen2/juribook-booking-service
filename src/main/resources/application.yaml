@@ -43,6 +43,14 @@ spring:
       # - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
       # - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
 
+  # ═══════════════════════════════════════════════════════════
+  #  Upload de documents (Sprint 6.6)
+  # ═══════════════════════════════════════════════════════════
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
 server:
   port: 8083
 
@@ -53,6 +61,17 @@ server:
 # ═══════════════════════════════════════════════════════════
 jwt:
   secret: juribook-secret-key-must-be-at-least-256-bits-long-for-hs256
+
+# ═══════════════════════════════════════════════════════════
+#  Stockage des documents uploadés
+#  upload-dir : dossier temporaire, où arrive le fichier à l'upload.
+#  permanent-storage-dir : simule un vrai stockage permanent (S3 ou
+#  équivalent en production), reste local à ce stade, distinct du
+#  dossier temporaire pour représenter conceptuellement le déplacement.
+# ═══════════════════════════════════════════════════════════
+app:
+  upload-dir: ${UPLOAD_DIR:/tmp/juribook-uploads}
+  permanent-storage-dir: ${PERMANENT_STORAGE_DIR:/tmp/juribook-permanent-storage}
 
 springdoc:
   api-docs:

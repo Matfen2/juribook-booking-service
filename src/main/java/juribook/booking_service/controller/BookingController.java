@@ -8,13 +8,17 @@ import jakarta.validation.Valid;
 import juribook.booking_service.dto.request.CreateBookingRequest;
 import juribook.booking_service.dto.response.BookingHistoryResponse;
 import juribook.booking_service.dto.response.BookingResponse;
+import juribook.booking_service.dto.response.DocumentUploadResponse;
+import juribook.booking_service.service.BookingDocumentService;
 import juribook.booking_service.service.BookingService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -22,12 +26,13 @@ import java.util.List;
  * Controller REST pour la réservation de créneaux et leur traitement.
  *
  * Routes :
- *   POST  /api/bookings              → CLIENT          (réserver un créneau)
- *   GET   /api/bookings              → CLIENT          (historique de ses réservations)
- *   GET   /api/bookings/{id}         → public           (détail enrichi, résolution inter-services)
- *   PATCH /api/bookings/{id}/confirm → LAWYER           (accepter une demande PENDING)
- *   PATCH /api/bookings/{id}/reject  → LAWYER           (refuser une demande PENDING)
- *   PATCH /api/bookings/{id}/cancel  → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
+ *   POST  /api/bookings                 → CLIENT          (réserver un créneau)
+ *   GET   /api/bookings                 → CLIENT          (historique de ses réservations)
+ *   GET   /api/bookings/{id}            → public           (détail enrichi, résolution inter-services)
+ *   POST  /api/bookings/{id}/documents  → CLIENT          (upload de document avant consultation)
+ *   PATCH /api/bookings/{id}/confirm    → LAWYER           (accepter une demande PENDING)
+ *   PATCH /api/bookings/{id}/reject     → LAWYER           (refuser une demande PENDING)
+ *   PATCH /api/bookings/{id}/cancel     → CLIENT ou LAWYER (annuler une réservation CONFIRMED, règle des 24h)
  *
  * Le tableau de bord avocat (GET /api/lawyers/{lawyerId}/bookings) est
  * exposé par LawyerBookingsController, pas ici.
@@ -35,10 +40,11 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/bookings")
 @RequiredArgsConstructor
-@Tag(name = "Réservations", description = "Réservation, consultation, confirmation, refus et annulation de créneaux")
+@Tag(name = "Réservations", description = "Réservation, consultation, confirmation, refus, annulation et documents")
 public class BookingController {
 
     private final BookingService bookingService;
+    private final BookingDocumentService bookingDocumentService;
 
     // ── POST /api/bookings ────────────────────────────────────
     @PostMapping
@@ -78,10 +84,10 @@ public class BookingController {
     @Operation(
         summary = "Détail enrichi d'une réservation",
         description = """
-            Public — pas de JWT requis. Utilisé en interne par les autres
-            microservices pour résoudre la date/heure d'un rendez-vous à partir d'un bookingId reçu via
-            un événement Kafka (qui ne transporte que timeSlotId, pas la
-            date/heure résolue).
+            Public - pas de JWT requis. Utilisé en interne par les autres
+            microservices pour résoudre la date/heure d'un rendez-vous à 
+            partir d'un bookingId reçu via un événement Kafka (qui ne transporte 
+            que timeSlotId, pas la date/heure résolue).
             """
     )
     @ApiResponses({
@@ -90,6 +96,36 @@ public class BookingController {
     })
     public ResponseEntity<BookingHistoryResponse> getBookingDetails(@PathVariable Long id) {
         return ResponseEntity.ok(bookingService.getBookingDetails(id));
+    }
+
+    // ── POST /api/bookings/{id}/documents ─────────────────────
+    @PostMapping(value = "/{id}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(
+        summary = "Envoyer un document avant consultation",
+        description = """
+            Réservé au CLIENT propriétaire de la réservation. Accepte
+            PDF/JPEG/PNG, 10 Mo max. Stocké temporairement sur disque,
+            le traitement définitif (scan, stockage permanent) est
+            asynchrone, d'où le 202 plutôt qu'un 200/201 : la requête 
+            est acceptée, pas encore totalement traitée. Publie 
+            document.uploaded sur Kafka.
+            """
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "202", description = "Document accepté, en attente de traitement"),
+        @ApiResponse(responseCode = "400", description = "Fichier vide, trop volumineux, type non autorisé, ou réservation CANCELLED/COMPLETED"),
+        @ApiResponse(responseCode = "401", description = "Token absent ou invalide"),
+        @ApiResponse(responseCode = "403", description = "Rôle insuffisant, ou réservation n'appartenant pas à ce client"),
+        @ApiResponse(responseCode = "404", description = "Réservation introuvable")
+    })
+    public ResponseEntity<DocumentUploadResponse> uploadDocument(
+            @PathVariable Long id,
+            Authentication authentication,
+            @RequestParam("file") MultipartFile file) {
+
+        Long clientId = (Long) authentication.getPrincipal();
+        DocumentUploadResponse response = bookingDocumentService.uploadDocument(clientId, id, file);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 
     // ── PATCH /api/bookings/{id}/confirm ──────────────────────

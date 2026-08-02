@@ -21,7 +21,7 @@ import java.util.List;
 /**
  * Service métier pour les disponibilités récurrentes des avocats.
  *
- * Règle centrale du Sprint 3.2 : la création d'une Availability déclenche
+ * Règle centrale : la création d'une Availability déclenche
  * IMMÉDIATEMENT la génération des TimeSlot concrets correspondants, sur
  * une fenêtre glissante de N semaines (par défaut DEFAULT_GENERATION_WEEKS).
  *
@@ -103,7 +103,6 @@ public class AvailabilityService {
     // ══════════════════════════════════════════════════════════
     //  Génération des créneaux concrets
     // ══════════════════════════════════════════════════════════
-
     /**
      * Génère les TimeSlot concrets pour une Availability donnée, sur les
      * `weeks` prochaines semaines à partir d'aujourd'hui (ou de validFrom
@@ -111,6 +110,18 @@ public class AvailabilityService {
      *
      * Idempotent : si un créneau existe déjà pour ce lawyerId/date/startTime,
      * il est ignoré plutôt que de provoquer une erreur de contrainte UNIQUE.
+     *
+     * ⚠️ Correctif (bug de borne découvert le 6 juillet 2026, un lundi) :
+     * la condition de boucle était `!cursor.isAfter(endSearch)` (équivalent
+     * à cursor <= endSearch). Quand startSearch tombe DÉJÀ sur le jour de
+     * semaine ciblé (cursor initial = startSearch), après `weeks` itérations
+     * cursor devient exactement égal à endSearch (= startSearch + weeks
+     * semaines), et cette égalité déclenchait un tour de boucle
+     * supplémentaire, doublant le nombre de créneaux générés pour une seule
+     * semaine demandée. Passé en `cursor.isBefore(endSearch)` (strict) :
+     * exclut proprement cette occurrence en trop, sans changer le
+     * comportement des cas où startSearch ne tombe pas sur le jour ciblé
+     * (cursor n'est alors jamais exactement égal à endSearch).
      */
     private int generateSlotsForAvailability(Availability availability, int weeks) {
         LocalDate startSearch = availability.getValidFrom().isAfter(LocalDate.now())
@@ -125,7 +136,7 @@ public class AvailabilityService {
         int created = 0;
         LocalDate cursor = nextOrSameDayOfWeek(startSearch, availability.getDayOfWeek());
 
-        while (!cursor.isAfter(endSearch)) {
+        while (cursor.isBefore(endSearch)) {
             created += generateSlotsForDate(availability, cursor);
             cursor = cursor.plusWeeks(1);
         }
@@ -183,7 +194,6 @@ public class AvailabilityService {
     // ══════════════════════════════════════════════════════════
     //  Validation métier
     // ══════════════════════════════════════════════════════════
-
     private void validateTimeRange(LocalTime start, LocalTime end) {
         if (!end.isAfter(start)) {
             throw new InvalidAvailabilityException(

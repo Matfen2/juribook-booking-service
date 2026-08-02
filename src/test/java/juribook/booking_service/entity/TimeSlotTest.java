@@ -47,8 +47,18 @@ class TimeSlotTest {
 
     @Test
     void isBookable_false_whenTodayButStartTimeAlreadyPassed() {
+        // Garde-fou : si l'heure actuelle est trop proche de minuit,
+        // LocalTime.now().minusHours(1) "wrappe" vers la veille (23h passé),
+        // qui se compare alors comme PLUS TARD que l'heure actuelle
+        // (LocalTime n'a pas de notion de date), faux négatif sinon.
+        // Même risque que le test suivant, qui a déjà ce garde-fou.
+        LocalTime oneHourAgo = LocalTime.now().minusHours(1);
+        if (oneHourAgo.isAfter(LocalTime.now())) {
+            return; // heure actuelle < 1h du matin, on évite le faux négatif
+        }
+
         slot.setDate(LocalDate.now());
-        slot.setStartTime(LocalTime.now().minusHours(1));
+        slot.setStartTime(oneHourAgo);
         slot.setEndTime(LocalTime.now().minusMinutes(30));
 
         assertThat(slot.isBookable()).isFalse();
