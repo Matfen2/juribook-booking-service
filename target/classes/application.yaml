@@ -4,7 +4,7 @@ spring:
 
   # ═══════════════════════════════════════════════════════════
   #  Connexion PostgreSQL (database per service)
-  #  Port 5434 en local - voir docker-compose.yml (postgres-booking)
+  #  Port 5434 en local, voir docker-compose.yml (postgres-booking)
   #  En conteneur Docker, surchargé par SPRING_DATASOURCE_URL
   # ═══════════════════════════════════════════════════════════
   datasource:
@@ -23,7 +23,7 @@ spring:
     enabled: true
 
   # ═══════════════════════════════════════════════════════════
-  #  Kafka - désactivé en dev local (pas de broker disponible)
+  #  Kafka : désactivé en dev local (pas de broker disponible)
   #  En production Docker, réactiver en supprimant l'exclude
   #  et en passant SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
   # ═══════════════════════════════════════════════════════════
@@ -40,11 +40,38 @@ spring:
 
   autoconfigure:
     exclude:
-      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
-      - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
+      # - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      # - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
+
+  # ═══════════════════════════════════════════════════════════
+  #  Upload de documents (Sprint 6.6)
+  # ═══════════════════════════════════════════════════════════
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
 
 server:
   port: 8083
+
+# ═══════════════════════════════════════════════════════════
+#  JWT
+#  Même secret que l'auth-service, le booking-service valide
+#  les tokens émis par l'auth-service, il n'en génère pas.
+# ═══════════════════════════════════════════════════════════
+jwt:
+  secret: juribook-secret-key-must-be-at-least-256-bits-long-for-hs256
+
+# ═══════════════════════════════════════════════════════════
+#  Stockage des documents uploadés
+#  upload-dir : dossier temporaire, où arrive le fichier à l'upload.
+#  permanent-storage-dir : simule un vrai stockage permanent (S3 ou
+#  équivalent en production), reste local à ce stade, distinct du
+#  dossier temporaire pour représenter conceptuellement le déplacement.
+# ═══════════════════════════════════════════════════════════
+app:
+  upload-dir: ${UPLOAD_DIR:/tmp/juribook-uploads}
+  permanent-storage-dir: ${PERMANENT_STORAGE_DIR:/tmp/juribook-permanent-storage}
 
 springdoc:
   api-docs:
