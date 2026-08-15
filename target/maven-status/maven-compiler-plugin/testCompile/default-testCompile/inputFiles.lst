@@ -1,1 +1,10 @@
 C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\BookingServiceApplicationTests.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\entity\TimeSlotTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\event\BookingEventPublisherImplTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\AvailabilityServiceTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\BookingDocumentServiceTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\BookingLifecycleTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\BookingServiceTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\DocumentProcessingServiceTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\TimeSlotServiceTest.java
+C:\Users\EyesEagle\Documents\Projets-Web\juribook-booking-service\src\test\java\juribook\booking_service\service\WaitlistServiceTest.java
